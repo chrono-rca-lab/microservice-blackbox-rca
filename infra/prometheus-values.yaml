@@ -1,0 +1,18 @@
+# Custom values for kube-prometheus-stack on kind.
+# Sets cAdvisor scrape interval to 5s (1s is too aggressive for kind).
+prometheus:
+  prometheusSpec:
+    scrapeInterval: 5s
+    evaluationInterval: 5s
+
+# kubelet / cAdvisor scrape config override
+kubelet:
+  serviceMonitor:
+    cAdvisorRelabelings:
+      - action: replace
+        targetLabel: job
+        replacement: kubelet
+    interval: 5s
+
+grafana:
+  adminPassword: admin
