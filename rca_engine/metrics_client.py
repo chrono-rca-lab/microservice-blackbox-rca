@@ -17,22 +17,22 @@ import requests
 # Rate metrics use a 30s window, which safely spans two 5s-interval scrapes.
 QUERIES: dict[str, str] = {
     "cpu_rate": (
-        'rate(container_cpu_usage_seconds_total{namespace="default",container!=""}[30s])'
+        'rate(container_cpu_usage_seconds_total{namespace="boutique",container!=""}[30s])'
     ),
     "mem_wss": (
-        'container_memory_working_set_bytes{namespace="default",container!=""}'
+        'container_memory_working_set_bytes{namespace="boutique",container!=""}'
     ),
     "net_rx_rate": (
-        'rate(container_network_receive_bytes_total{namespace="default"}[30s])'
+        'rate(container_network_receive_bytes_total{namespace="boutique"}[30s])'
     ),
     "net_tx_rate": (
-        'rate(container_network_transmit_bytes_total{namespace="default"}[30s])'
+        'rate(container_network_transmit_bytes_total{namespace="boutique"}[30s])'
     ),
     "fs_read_rate": (
-        'rate(container_fs_reads_bytes_total{namespace="default",container!=""}[30s])'
+        'rate(container_fs_reads_bytes_total{namespace="boutique",container!=""}[30s])'
     ),
     "fs_write_rate": (
-        'rate(container_fs_writes_bytes_total{namespace="default",container!=""}[30s])'
+        'rate(container_fs_writes_bytes_total{namespace="boutique",container!=""}[30s])'
     ),
 }
 

@@ -24,7 +24,7 @@ helm upgrade --install "${RELEASE}" prometheus-community/kube-prometheus-stack \
 
 # 3. Port-forward Prometheus → localhost:9090 and Grafana → localhost:3000
 echo "[monitoring] Port-forwarding Prometheus → localhost:9090 (background)"
-kubectl port-forward -n "${NAMESPACE}" svc/${RELEASE}-prometheus 9090:9090 &
+kubectl port-forward -n "${NAMESPACE}" svc/${RELEASE}-kube-prome-prometheus 9090:9090 &
 
 echo "[monitoring] Port-forwarding Grafana → localhost:3000 (background)"
 kubectl port-forward -n "${NAMESPACE}" svc/${RELEASE}-grafana 3000:80 &

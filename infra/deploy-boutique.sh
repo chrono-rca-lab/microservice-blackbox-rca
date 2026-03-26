@@ -23,13 +23,13 @@ kubectl create namespace "${NAMESPACE}" --dry-run=client -o yaml | kubectl apply
 echo "[boutique] Applying Online Boutique manifests …"
 kubectl apply -n "${NAMESPACE}" -f "${MANIFESTS_URL}"
 
-# 3. Disable the built-in load generator (we control load ourselves)
-echo "[boutique] Scaling loadgenerator to 0 …"
-kubectl scale deployment loadgenerator --replicas=0 -n "${NAMESPACE}"
-
-# 4. Wait for all pods to be ready
+# 3. Wait for all pods to be ready (loadgenerator must exist before we scale it down)
 echo "[boutique] Waiting for all pods to be ready (timeout 300s) …"
 kubectl wait --for=condition=ready pod --all -n "${NAMESPACE}" --timeout=300s
+
+# 4. Disable the built-in load generator (we control load ourselves)
+echo "[boutique] Scaling loadgenerator to 0 …"
+kubectl scale deployment loadgenerator --replicas=0 -n "${NAMESPACE}"
 
 # 5. Port-forward frontend to localhost:8080 (background)
 echo "[boutique] Port-forwarding frontend → localhost:8080 (background) …"

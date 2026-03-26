@@ -8,11 +8,16 @@ prometheus:
 # kubelet / cAdvisor scrape config override
 kubelet:
   serviceMonitor:
+    interval: 5s
     cAdvisorRelabelings:
+      # Keep the job label as "kubelet"
       - action: replace
         targetLabel: job
         replacement: kubelet
-    interval: 5s
+      # Copy the internal __metrics_path__ into a real label so that
+      # recording rules that filter on metrics_path="/metrics/cadvisor" work.
+      - sourceLabels: [__metrics_path__]
+        targetLabel: metrics_path
 
 grafana:
   adminPassword: admin
