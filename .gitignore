@@ -10,10 +10,10 @@ build/
 .venv/
 venv/
 
-# Experiments (keep only summaries and .gitkeep)
-experiments/run_*/
-experiments/*.json
+# Experiments — keep matrix YAML and .gitkeep; ignore run output
+experiments/20*/
 !experiments/.gitkeep
+!experiments/experiment_matrix.yaml
 
 # Editor
 .vscode/
