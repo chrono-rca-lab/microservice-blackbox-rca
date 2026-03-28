@@ -1,0 +1,75 @@
+# Experiment matrix — defines all fault injection runs for the paper.
+# Run with: python eval/run_batch.py --matrix experiments/experiment_matrix.yaml
+#
+# Injectable services (have /bin/sh): adservice, currencyservice, emailservice,
+#                                     paymentservice, recommendationservice
+# Distroless (no shell, cannot inject): cartservice, checkoutservice, frontend,
+#                                       productcatalogservice, shippingservice
+#
+# Requires infra/boutique-manifests-patched.yaml to be applied so that:
+#   - readOnlyRootFilesystem is removed  (disk_hog needs writable /tmp)
+#   - NET_ADMIN is present               (net_delay needs tc netem)
+#   - emptyDir at /tmp is mounted        (provides a block-backed writable path)
+# Run: bash infra/deploy-boutique.sh   to apply the patches.
+
+cooldown_seconds: 120
+
+experiments:
+  # ── cpu_hog ────────────────────────────────────────────────────────────────
+  - fault: cpu_hog
+    service: recommendationservice
+    duration: 120
+
+  - fault: cpu_hog
+    service: emailservice
+    duration: 120
+
+  - fault: cpu_hog
+    service: currencyservice
+    duration: 120
+
+  - fault: cpu_hog
+    service: adservice
+    duration: 120
+
+  # ── mem_leak ───────────────────────────────────────────────────────────────
+  - fault: mem_leak
+    service: recommendationservice
+    duration: 120
+
+  - fault: mem_leak
+    service: paymentservice
+    duration: 120
+
+  - fault: mem_leak
+    service: emailservice
+    duration: 120
+
+  # ── disk_hog (requires patched manifest for writable /tmp) ─────────────────
+  - fault: disk_hog
+    service: currencyservice
+    duration: 120
+
+  - fault: disk_hog
+    service: emailservice
+    duration: 120
+
+  - fault: disk_hog
+    service: paymentservice
+    duration: 120
+
+  # net_delay excluded: tc/iptables not installed in container images (Alpine/Node.js).
+  # NET_ADMIN capability grants permission but the binaries aren't present.
+  # Additionally, network latency is not observable in the current metric set
+  # (cpu_rate, mem_wss, fs_*_rate, net_*_rate all measure throughput, not latency).
+
+  # ── concurrent faults ──────────────────────────────────────────────────────
+  - fault: cpu_hog
+    service: emailservice
+    concurrent: currencyservice
+    duration: 120
+
+  - fault: mem_leak
+    service: recommendationservice
+    concurrent: paymentservice
+    duration: 120
