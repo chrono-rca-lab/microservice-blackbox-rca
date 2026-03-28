@@ -20,5 +20,9 @@ experiments/20*/
 .idea/
 *.swp
 
+# Generated manifests (patch_manifests.py output)
+infra/boutique-manifests.yaml
+infra/boutique-manifests-patched.yaml
+
 # OS
 .DS_Store
