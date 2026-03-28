@@ -47,9 +47,10 @@ PatternType = Literal["sine", "step", "constant"]
 class WorkloadGenerator:
     """Generates HTTP traffic against the Online Boutique frontend."""
 
-    def __init__(self, frontend_url: str = "http://localhost:8080") -> None:
+    def __init__(self, frontend_url: str = "http://localhost:8080", quiet: bool = False) -> None:
         self.frontend_url = frontend_url.rstrip("/")
         self._session = requests.Session()
+        self._quiet = quiet  # suppresses SLO violation prints (use when run from orchestrator)
         # Rolling window of (completed_at, latency_s) tuples for SLO tracking
         self._latency_window: deque[tuple[float, float]] = deque()
         self._window_lock = threading.Lock()
@@ -143,11 +144,22 @@ class WorkloadGenerator:
 
         recent.sort()
         p95 = recent[int(len(recent) * 0.95)]
-        if p95 > p95_threshold:
+        if p95 > p95_threshold and not self._quiet:
             print(
                 f"[loadgen] SLO VIOLATION  p95={p95*1000:.0f}ms > {p95_threshold*1000:.0f}ms"
                 f"  (n={len(recent)} samples in last {window_seconds:.0f}s)"
             )
+
+    def current_p95(self, window_seconds: float = 10.0) -> float | None:
+        """Return p95 latency (seconds) over the last *window_seconds*, or None if no data."""
+        now = time.time()
+        cutoff = now - window_seconds
+        with self._window_lock:
+            recent = [lat for ts, lat in self._latency_window if ts >= cutoff and not math.isnan(lat)]
+        if not recent:
+            return None
+        recent.sort()
+        return recent[int(len(recent) * 0.95)]
 
     # ------------------------------------------------------------------
     # Main loop

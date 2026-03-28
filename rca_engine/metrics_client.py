@@ -19,6 +19,15 @@ QUERIES: dict[str, str] = {
     "cpu_rate": (
         'rate(container_cpu_usage_seconds_total{namespace="boutique",container!=""}[30s])'
     ),
+    # Fraction of CFS scheduling periods where the pod was CPU-throttled.
+    # Rises sharply when a cpu_hog fault hits a resource-limited container,
+    # even when cpu_rate stays flat at its limit.
+    # Note: cAdvisor emits this without a container label — it is pod-scoped.
+    "cpu_throttle_ratio": (
+        'sum by (pod, namespace) (rate(container_cpu_cfs_throttled_periods_total{namespace="boutique"}[30s]))'
+        ' / '
+        'sum by (pod, namespace) (rate(container_cpu_cfs_periods_total{namespace="boutique"}[30s]))'
+    ),
     "mem_wss": (
         'container_memory_working_set_bytes{namespace="boutique",container!=""}'
     ),
