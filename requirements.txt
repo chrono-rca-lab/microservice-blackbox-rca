@@ -1,6 +1,7 @@
 numpy
 scipy
 pandas
+pyarrow
 matplotlib
 requests
 prometheus-api-client
