@@ -129,6 +129,7 @@ python eval/run_experiment.py --fault mem_leak --service recommendationservice -
 python eval/run_experiment.py --fault mem_leak --service paymentservice         --duration 120
 python eval/run_experiment.py --fault mem_leak --service emailservice           --duration 120
 ```
+Avoid paymentservice since it doesn't have python runtime. It works but not as significant.
 
 ### disk_hog experiments
 
