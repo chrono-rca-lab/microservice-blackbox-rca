@@ -29,6 +29,43 @@ MANIFESTS_URL = (
 
 SCRIPT_DIR = Path(__file__).parent
 
+# Per-service resource overrides applied on top of upstream defaults.
+#
+# cartservice: upstream 128Mi → OOMKilled under normal load (.NET GC pressure).
+#
+# Injectable services (adservice, recommendationservice, emailservice,
+# paymentservice, currencyservice): upstream CPU limits (200-300m) are too
+# tight for cpu_hog. With even 1 busy-loop the container hits its CPU ceiling
+# and the gRPC liveness probe (1s timeout) starves → pod restart before the
+# fault can propagate. 500m gives the service ~250ms/s of CPU headroom while
+# still driving cpu_throttle_ratio to ~50% — a strong, clean RCA signal.
+RESOURCE_OVERRIDES: dict[str, dict] = {
+    "cartservice": {
+        "limits":   {"cpu": "300m", "memory": "256Mi"},
+        "requests": {"cpu": "200m", "memory": "128Mi"},
+    },
+    "adservice": {
+        "limits":   {"cpu": "500m"},
+        "requests": {"cpu": "200m"},
+    },
+    "recommendationservice": {
+        "limits":   {"cpu": "500m"},
+        "requests": {"cpu": "200m"},
+    },
+    "emailservice": {
+        "limits":   {"cpu": "500m"},
+        "requests": {"cpu": "100m"},
+    },
+    "paymentservice": {
+        "limits":   {"cpu": "500m"},
+        "requests": {"cpu": "100m"},
+    },
+    "currencyservice": {
+        "limits":   {"cpu": "500m"},
+        "requests": {"cpu": "100m"},
+    },
+}
+
 
 def _patch_container(container: dict) -> None:
     """Mutate a single container spec in-place."""
@@ -56,9 +93,18 @@ def _patch_container(container: dict) -> None:
 def _patch_deployment(doc: dict) -> None:
     """Mutate a Deployment document in-place."""
     pod_spec = doc["spec"]["template"]["spec"]
+    deploy_name = doc.get("metadata", {}).get("name", "")
 
     for c in pod_spec.get("containers", []):
         _patch_container(c)
+        # Apply resource overrides for services whose upstream limits are too tight
+        if deploy_name in RESOURCE_OVERRIDES:
+            overrides = RESOURCE_OVERRIDES[deploy_name]
+            resources = c.setdefault("resources", {})
+            if "limits" in overrides:
+                resources.setdefault("limits", {}).update(overrides["limits"])
+            if "requests" in overrides:
+                resources.setdefault("requests", {}).update(overrides["requests"])
     for c in pod_spec.get("initContainers", []):
         _patch_container(c)
 

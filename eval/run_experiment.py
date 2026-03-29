@@ -1,15 +1,26 @@
 """Experiment orchestrator: inject → collect → RCA → score.
 
-Automates a single fault injection experiment end-to-end.
+Fixed-schedule pipeline — the SLO monitor runs in the background and records
+diagnosis latency as metadata, but never gates the experiment.
+
+Schedule:
+    1. Start load generator
+    2. Baseline period (BASELINE_DURATION s)
+    3. Inject fault + start SLO monitor (background)
+    4. Wait fault duration
+    5. Collect metrics (windows anchored to injection time)
+    6. Run RCA
+    7. Reap inject subprocess + recovery
 
 Usage:
-    python eval/run_experiment.py --fault cpu_hog --service checkoutservice --duration 120
-    python eval/run_experiment.py --fault cpu_hog --service checkoutservice --duration 120 --run-id run_001
+    python eval/run_experiment.py --fault cpu_hog  --service adservice           --duration 120
+    python eval/run_experiment.py --fault mem_leak --service recommendationservice --duration 120
 """
 
 import json
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,62 +40,85 @@ import fault_injection.ground_truth as gt
 EXPERIMENTS_DIR = ROOT / "experiments"
 INJECT_SCRIPT   = ROOT / "fault_injection" / "inject.py"
 
-P95_THRESHOLD_MS  = 500
-BASELINE_DURATION = 60    # seconds of steady-state before injection
-PROPAGATION_WAIT  = 30    # seconds after SLO violation before calling RCA
-RECOVERY_WAIT     = 30    # seconds after fault stops for recovery metrics
-SLO_POLL_INTERVAL = 5     # seconds between SLO checks
-SLO_TIMEOUT       = 300   # give up waiting for violation after this many seconds
-FRONTEND_URL      = "http://localhost:8080"
-PROMETHEUS_URL    = "http://localhost:9090"
-NAMESPACE         = "boutique"
+P95_THRESHOLD_MS     = 500   # floor for the dynamic SLO threshold
+BASELINE_DURATION    = 60    # seconds of steady-state before injection
+BASELINE_END_BUFFER  = 10    # seconds trimmed from the tail of the baseline window
+                              # (avoids capturing the transition moment in the normal distribution)
+RECOVERY_WAIT        = 30    # seconds of post-fault observation before stopping loadgen
+SLO_POLL_INTERVAL    = 5     # seconds between SLO log lines
+FRONTEND_URL         = "http://localhost:8080"
+PROMETHEUS_URL       = "http://localhost:9090"
+NAMESPACE            = "boutique"
 
 
 # ---------------------------------------------------------------------------
-# SLO monitoring
+# SLO monitor — background thread, non-blocking, metadata only
 # ---------------------------------------------------------------------------
 
-def poll_for_slo_violation(
-    gen: WorkloadGenerator,
-    timeout: float,
-) -> float | None:
-    """Poll for SLO violation every SLO_POLL_INTERVAL seconds using loadgen p95.
+class SLOMonitor:
+    """Logs frontend p95 latency every SLO_POLL_INTERVAL seconds.
 
-    Returns the POSIX timestamp of the first violation, or None if timeout is reached.
+    Records the first violation timestamp.  Runs entirely in the background;
+    does NOT gate the experiment — the caller decides when to start/stop it.
     """
-    deadline = time.time() + timeout
 
-    while time.time() < deadline:
-        p95 = gen.current_p95(window_seconds=10)
-        if p95 is not None:
+    def __init__(self, gen: WorkloadGenerator, threshold_ms: float) -> None:
+        self._gen = gen
+        self._threshold_ms = threshold_ms
+        self._violation_time: float | None = None
+        self._stop = threading.Event()
+        self._lock = threading.Lock()
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        self._stop.clear()
+        self._thread = threading.Thread(
+            target=self._run, daemon=True, name="slo-monitor"
+        )
+        self._thread.start()
+
+    def stop(self) -> float | None:
+        """Signal stop, wait for thread to exit, return violation timestamp (or None)."""
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=SLO_POLL_INTERVAL + 2)
+        with self._lock:
+            return self._violation_time
+
+    def _run(self) -> None:
+        # Wait first so the initial window is post-injection, not pre-injection.
+        # Runs silently — only logs when a violation fires.
+        while not self._stop.wait(SLO_POLL_INTERVAL):
+            p95 = self._gen.current_p95(window_seconds=10)
+            if p95 is None:
+                continue
             ms = p95 * 1000
-            click.echo(f"  [slo] p95={ms:.0f}ms")
-            if ms > P95_THRESHOLD_MS:
-                return time.time()
-        time.sleep(SLO_POLL_INTERVAL)
-
-    return None
+            with self._lock:
+                if self._violation_time is None and ms > self._threshold_ms:
+                    self._violation_time = time.time()
+                    click.echo(
+                        f"  [slo] VIOLATION detected — p95={ms:.0f}ms"
+                        f" (threshold={self._threshold_ms:.0f}ms)"
+                    )
 
 
 # ---------------------------------------------------------------------------
-# RCA stub — replaced once fault_chain is implemented
+# RCA — calls fault_chain.pinpoint once implemented
 # ---------------------------------------------------------------------------
 
 def run_rca(
     metric_matrix: dict,
-    window_start: float,
-    window_end: float,
-    baseline_start: float,
-    baseline_end: float,
+    baseline_window: tuple[float, float],
+    fault_window: tuple[float, float],
     run_dir: Path,
 ) -> dict:
     """Call the RCA engine and return a results dict."""
     try:
         from rca_engine import fault_chain
         ranked = fault_chain.pinpoint(
-            anomaly_scores={},          # filled in once normal_model is built
-            dependency_graph={},
-            change_points={},
+            metric_matrix=metric_matrix,
+            baseline_window=baseline_window,
+            fault_window=fault_window,
         )
         return {"ranked_services": ranked}
     except NotImplementedError:
@@ -96,7 +130,7 @@ def run_rca(
 
 
 # ---------------------------------------------------------------------------
-# Artifact helpers
+# Helpers
 # ---------------------------------------------------------------------------
 
 def _save_json(path: Path, obj: dict) -> None:
@@ -116,14 +150,14 @@ def _iso(ts: float) -> str:
 # ---------------------------------------------------------------------------
 
 @click.command()
-@click.option("--fault",    required=True,
+@click.option("--fault",      required=True,
               type=click.Choice(["cpu_hog", "mem_leak", "net_delay", "disk_hog"]))
-@click.option("--service",  required=True, help="Primary target service name.")
-@click.option("--duration", default=120, show_default=True,
+@click.option("--service",    required=True, help="Primary target service name.")
+@click.option("--duration",   default=120, show_default=True,
               help="Fault duration in seconds.")
-@click.option("--run-id",   default=None,
+@click.option("--run-id",     default=None,
               help="Run ID (timestamp-based ID generated if omitted).")
-@click.option("--rps",      default=5.0, show_default=True,
+@click.option("--rps",        default=5.0, show_default=True,
               help="Load generator base RPS.")
 @click.option("--concurrent", default=None,
               help="Comma-separated additional services to fault simultaneously.")
@@ -148,39 +182,60 @@ def run(
     click.echo(f"  duration: {duration}s")
     click.echo(f"{'='*60}\n")
 
-    timeline: dict = {"run_id": run_id, "fault": fault, "service": service,
-                      "duration_seconds": duration, "events": {}}
+    timeline: dict = {
+        "run_id":           run_id,
+        "fault":            fault,
+        "service":          service,
+        "duration_seconds": duration,
+        "events":           {},
+        "windows":          {},
+        "slo":              {},
+    }
     client = PrometheusMetricsClient(prometheus_url=PROMETHEUS_URL)
 
     # ------------------------------------------------------------------
     # 1. Start load generator
     # ------------------------------------------------------------------
-    click.echo("[1/9] Starting load generator …")
+    click.echo("[1/7] Starting load generator …")
     gen = WorkloadGenerator(frontend_url=FRONTEND_URL, quiet=True)
-    # Run for baseline + duration + propagation + recovery + buffer
-    total_gen_duration = BASELINE_DURATION + duration + PROPAGATION_WAIT + RECOVERY_WAIT + 60
+    total_gen_duration = BASELINE_DURATION + duration + RECOVERY_WAIT + 60
     gen.run(duration_seconds=total_gen_duration, base_rps=rps, pattern="constant")
-    timeline["events"]["experiment_start"] = _ts()
+    experiment_start = _ts()
+    timeline["events"]["experiment_start"] = experiment_start
 
     # ------------------------------------------------------------------
     # 2. Baseline period
     # ------------------------------------------------------------------
-    click.echo(f"[2/9] Baseline period ({BASELINE_DURATION}s) …")
+    click.echo(f"[2/7] Baseline period ({BASELINE_DURATION}s) …")
     baseline_start = _ts()
     time.sleep(BASELINE_DURATION)
     baseline_end = _ts()
     timeline["events"]["baseline_end"] = baseline_end
 
+    # Dynamic SLO threshold: 2× measured baseline p95, floored at P95_THRESHOLD_MS
+    baseline_p95 = gen.current_p95(window_seconds=BASELINE_DURATION)
+    if baseline_p95 is not None:
+        dynamic_threshold_ms = max(baseline_p95 * 1000 * 2.0, float(P95_THRESHOLD_MS))
+    else:
+        dynamic_threshold_ms = float(P95_THRESHOLD_MS)
+    click.echo(
+        f"  baseline p95={baseline_p95*1000:.0f}ms → SLO threshold={dynamic_threshold_ms:.0f}ms"
+        if baseline_p95 else
+        f"  baseline p95 unavailable → SLO threshold={dynamic_threshold_ms:.0f}ms"
+    )
+    timeline["baseline_p95_ms"]  = round(baseline_p95 * 1000, 1) if baseline_p95 else None
+    timeline["slo_threshold_ms"] = dynamic_threshold_ms
+
     # ------------------------------------------------------------------
-    # 3. Inject fault (background subprocess)
+    # 3. Inject fault + start SLO monitor in background
     # ------------------------------------------------------------------
-    click.echo(f"[3/9] Injecting fault '{fault}' into '{service}' …")
+    click.echo(f"[3/7] Injecting fault '{fault}' into '{service}' …")
     inject_cmd = [
         sys.executable, str(INJECT_SCRIPT),
-        "--fault", fault,
-        "--service", service,
-        "--duration", str(duration),
-        "--run-id", run_id,
+        "--fault",     fault,
+        "--service",   service,
+        "--duration",  str(duration),
+        "--run-id",    run_id,
         "--namespace", NAMESPACE,
     ]
     if concurrent:
@@ -196,40 +251,62 @@ def run(
     timeline["events"]["injection_start"] = injection_time
     click.echo(f"  inject PID={inject_proc.pid}")
 
+    slo_monitor = SLOMonitor(gen, threshold_ms=dynamic_threshold_ms)
+    slo_monitor.start()
+
     # ------------------------------------------------------------------
-    # 4. Poll for SLO violation
+    # 4. Wait for fault to run its full duration
     # ------------------------------------------------------------------
-    click.echo(f"[4/9] Polling for SLO violation (p95 > {P95_THRESHOLD_MS}ms, timeout={SLO_TIMEOUT}s) …")
-    violation_time = poll_for_slo_violation(gen, timeout=SLO_TIMEOUT)
-    if violation_time:
-        click.echo(f"  SLO violated at t+{violation_time - injection_time:.0f}s after injection")
-        timeline["events"]["slo_violation"] = violation_time
+    click.echo(f"[4/7] Fault active — waiting {duration}s …")
+    time.sleep(duration)
+    fault_end_time = _ts()
+    timeline["events"]["fault_end"] = fault_end_time
+
+    # Harvest SLO result — violation_time is None if threshold was never crossed
+    violation_time = slo_monitor.stop()
+    timeline["slo"]["violation_time"] = violation_time
+    if violation_time is not None:
+        diag_latency = round(violation_time - injection_time, 2)
+        timeline["slo"]["diagnosis_latency_seconds"] = diag_latency
     else:
-        click.echo("  No SLO violation detected — continuing with injection end time as reference")
-        violation_time = injection_time + duration
-        timeline["events"]["slo_violation"] = None
+        timeline["slo"]["diagnosis_latency_seconds"] = None
 
     # ------------------------------------------------------------------
-    # 5. Propagation window
+    # 5. Collect metrics — windows anchored to injection time
     # ------------------------------------------------------------------
-    click.echo(f"[5/9] Waiting {PROPAGATION_WAIT}s for fault propagation …")
-    time.sleep(PROPAGATION_WAIT)
+    # baseline_window: [injection_time - BASELINE_DURATION,
+    #                   injection_time - BASELINE_END_BUFFER]
+    #   Trims the final BASELINE_END_BUFFER seconds before injection to avoid
+    #   capturing any transition effects in the normal-behaviour distribution.
+    #
+    # fault_window: [injection_time, fault_end_time]
+    #   The exact period the fault was active.
 
-    # ------------------------------------------------------------------
-    # 6. Collect metrics window for RCA
-    # ------------------------------------------------------------------
-    rca_window_end   = _ts()
-    rca_window_start = max(baseline_start, violation_time - 100)
+    baseline_window_start = injection_time - BASELINE_DURATION
+    baseline_window_end   = injection_time - BASELINE_END_BUFFER
+    fault_window_start    = injection_time
+    fault_window_end      = fault_end_time
+
+    timeline["windows"] = {
+        "baseline_start": baseline_window_start,
+        "baseline_end":   baseline_window_end,
+        "fault_start":    fault_window_start,
+        "fault_end":      fault_window_end,
+    }
+
     click.echo(
-        f"[6/9] Collecting metrics window "
-        f"[{_iso(rca_window_start)} to {_iso(rca_window_end)}] …"
+        f"[5/7] Collecting metrics …\n"
+        f"  baseline [{_iso(baseline_window_start)} → {_iso(baseline_window_end)}]\n"
+        f"  fault    [{_iso(fault_window_start)} → {_iso(fault_window_end)}]"
     )
     try:
-        df = client.fetch_metrics(rca_window_start, rca_window_end)
-        matrix = client.fetch_metric_matrix(rca_window_start, rca_window_end)
+        df     = client.fetch_metrics(baseline_window_start, fault_window_end)
+        matrix = client.fetch_metric_matrix(baseline_window_start, fault_window_end)
         if not df.empty:
             df.to_parquet(run_dir / "metrics.parquet", index=False)
-            click.echo(f"  saved metrics.parquet  ({len(df):,} rows, {df['service'].nunique()} services)")
+            click.echo(
+                f"  saved metrics.parquet  ({len(df):,} rows, {df['service'].nunique()} services)"
+            )
         else:
             click.echo("  WARNING: no metrics returned — metrics.parquet not saved")
             matrix = {}
@@ -238,12 +315,16 @@ def run(
         matrix = {}
 
     # ------------------------------------------------------------------
-    # 7. Run RCA
+    # 6. Run RCA
     # ------------------------------------------------------------------
-    click.echo("[7/9] Running RCA …")
+    click.echo("[6/7] Running RCA …")
     rca_start = _ts()
-    rca_results = run_rca(matrix, rca_window_start, rca_window_end,
-                          baseline_start, baseline_end, run_dir)
+    rca_results = run_rca(
+        metric_matrix=matrix,
+        baseline_window=(baseline_window_start, baseline_window_end),
+        fault_window=(fault_window_start, fault_window_end),
+        run_dir=run_dir,
+    )
     rca_end = _ts()
     timeline["events"]["rca_start"] = rca_start
     timeline["events"]["rca_end"]   = rca_end
@@ -251,35 +332,27 @@ def run(
     click.echo(f"  rca done in {rca_end - rca_start:.1f}s")
 
     # ------------------------------------------------------------------
-    # 8. Wait for fault subprocess to finish
+    # 7. Reap inject subprocess + recovery period
     # ------------------------------------------------------------------
-    click.echo("[8/9] Waiting for fault script to finish …")
+    click.echo(f"[7/7] Collecting inject output + recovery ({RECOVERY_WAIT}s) …")
     try:
-        stdout, stderr = inject_proc.communicate(timeout=duration + 30)
+        # Fault duration has already elapsed — subprocess should be done or nearly so
+        stdout, stderr = inject_proc.communicate(timeout=30)
         if stdout:
             click.echo(stdout.strip())
         if inject_proc.returncode != 0 and stderr:
             click.echo(f"  inject stderr: {stderr.strip()}", err=True)
     except subprocess.TimeoutExpired:
-        click.echo("  inject timed out — terminating", err=True)
+        click.echo("  inject script still running after fault window — killing", err=True)
         inject_proc.kill()
+        inject_proc.communicate()
     timeline["events"]["fault_stopped"] = _ts()
 
-    # ------------------------------------------------------------------
-    # 9. Recovery + wrap-up
-    # ------------------------------------------------------------------
-    click.echo(f"[9/9] Recovery period ({RECOVERY_WAIT}s) …")
     time.sleep(RECOVERY_WAIT)
     gen.stop()
     experiment_end = _ts()
-    timeline["events"]["recovery_end"]    = experiment_end
-    timeline["events"]["experiment_end"]  = experiment_end
-
-    # Diagnosis latency — time from injection to SLO detection
-    if timeline["events"]["slo_violation"]:
-        timeline["diagnosis_latency_seconds"] = round(
-            timeline["events"]["slo_violation"] - injection_time, 2
-        )
+    timeline["events"]["recovery_end"]   = experiment_end
+    timeline["events"]["experiment_end"] = experiment_end
 
     _save_json(run_dir / "timeline.json", timeline)
 
@@ -288,10 +361,14 @@ def run(
     # ------------------------------------------------------------------
     click.echo(f"\n{'='*60}")
     click.echo(f"  Experiment complete  —  artifacts in {run_dir}")
-    click.echo(f"  Duration : {experiment_end - timeline['events']['experiment_start']:.0f}s total")
-    if timeline.get("diagnosis_latency_seconds") is not None:
-        click.echo(f"  Diagnosis latency: {timeline['diagnosis_latency_seconds']}s")
-    click.echo(f"  Files:")
+    click.echo(f"  Total duration : {experiment_end - experiment_start:.0f}s")
+    diag = timeline["slo"].get("diagnosis_latency_seconds")
+    click.echo(
+        f"  SLO violation  : t+{diag}s after injection"
+        if diag is not None else
+        f"  SLO violation  : not detected (p95 stayed below {dynamic_threshold_ms:.0f}ms)"
+    )
+    click.echo("  Files:")
     for f in sorted(run_dir.iterdir()):
         click.echo(f"    {f.name}")
     click.echo(f"{'='*60}\n")
