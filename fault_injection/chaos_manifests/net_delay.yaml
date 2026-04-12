@@ -1,0 +1,18 @@
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: net-delay-TARGET
+  namespace: boutique
+spec:
+  action: delay
+  mode: one
+  selector:
+    namespaces:
+      - boutique
+    labelSelectors:
+      app: TARGET_SERVICE
+  delay:
+    latency: "200ms"
+    jitter: "50ms"
+    correlation: "50"
+  duration: "DURATION_VALUE"

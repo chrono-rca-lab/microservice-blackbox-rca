@@ -3,6 +3,14 @@
 Fixed-schedule pipeline — the SLO monitor runs in the background and records
 diagnosis latency as metadata, but never gates the experiment.
 
+Injector selection:
+  - cpu_hog / mem_leak / net_delay / packet_loss → chaos_inject.py (Chaos Mesh)
+      Works on all services including distroless Go containers.
+  - disk_hog → inject.py (kubectl exec)
+      Fallback: IOChaos requires FUSE kernel support not available on kind.
+      disk_hog only works on services with /bin/sh (adservice, recommendationservice,
+      emailservice, paymentservice, currencyservice).
+
 Schedule:
     1. Start load generator
     2. Baseline period (BASELINE_DURATION s)
@@ -13,8 +21,9 @@ Schedule:
     7. Reap inject subprocess + recovery
 
 Usage:
-    python eval/run_experiment.py --fault cpu_hog  --service adservice           --duration 120
-    python eval/run_experiment.py --fault mem_leak --service recommendationservice --duration 120
+    python eval/run_experiment.py --fault cpu_hog   --service frontend            --duration 120
+    python eval/run_experiment.py --fault net_delay --service cartservice          --duration 120
+    python eval/run_experiment.py --fault disk_hog  --service currencyservice      --duration 120
 """
 
 import json
@@ -37,8 +46,13 @@ from infra.loadgen import WorkloadGenerator
 from rca_engine.metrics_client import PrometheusMetricsClient
 import fault_injection.ground_truth as gt
 
-EXPERIMENTS_DIR = ROOT / "experiments"
-INJECT_SCRIPT   = ROOT / "fault_injection" / "inject.py"
+EXPERIMENTS_DIR    = ROOT / "experiments"
+CHAOS_INJECT_SCRIPT = ROOT / "fault_injection" / "chaos_inject.py"
+EXEC_INJECT_SCRIPT  = ROOT / "fault_injection" / "inject.py"
+
+# Faults handled by the old kubectl-exec injector (shell required in container).
+# IOChaos needs FUSE which is unavailable on kind — fall back to shell script.
+EXEC_ONLY_FAULTS = {"disk_hog"}
 
 P95_THRESHOLD_MS     = 500   # floor for the dynamic SLO threshold
 BASELINE_DURATION    = 60    # seconds of steady-state before injection
@@ -151,7 +165,7 @@ def _iso(ts: float) -> str:
 
 @click.command()
 @click.option("--fault",      required=True,
-              type=click.Choice(["cpu_hog", "mem_leak", "net_delay", "disk_hog"]))
+              type=click.Choice(["cpu_hog", "mem_leak", "net_delay", "disk_hog", "packet_loss"]))
 @click.option("--service",    required=True, help="Primary target service name.")
 @click.option("--duration",   default=120, show_default=True,
               help="Fault duration in seconds.")
@@ -219,9 +233,9 @@ def run(
     else:
         dynamic_threshold_ms = float(P95_THRESHOLD_MS)
     click.echo(
-        f"  baseline p95={baseline_p95*1000:.0f}ms → SLO threshold={dynamic_threshold_ms:.0f}ms"
+        f"  baseline p95={baseline_p95*1000:.0f}ms, SLO threshold={dynamic_threshold_ms:.0f}ms"
         if baseline_p95 else
-        f"  baseline p95 unavailable → SLO threshold={dynamic_threshold_ms:.0f}ms"
+        f"  baseline p95 unavailable, SLO threshold={dynamic_threshold_ms:.0f}ms"
     )
     timeline["baseline_p95_ms"]  = round(baseline_p95 * 1000, 1) if baseline_p95 else None
     timeline["slo_threshold_ms"] = dynamic_threshold_ms
@@ -229,9 +243,16 @@ def run(
     # ------------------------------------------------------------------
     # 3. Inject fault + start SLO monitor in background
     # ------------------------------------------------------------------
-    click.echo(f"[3/7] Injecting fault '{fault}' into '{service}' …")
+    # Routing: disk_hog falls back to kubectl-exec (shell-based) because
+    # IOChaos requires FUSE kernel support unavailable on kind clusters.
+    # All other faults go through Chaos Mesh (works on distroless containers).
+    use_exec = fault in EXEC_ONLY_FAULTS
+    inject_script = EXEC_INJECT_SCRIPT if use_exec else CHAOS_INJECT_SCRIPT
+    injector_label = "exec" if use_exec else "chaos"
+
+    click.echo(f"[3/7] Injecting fault '{fault}' into '{service}' (injector={injector_label}) …")
     inject_cmd = [
-        sys.executable, str(INJECT_SCRIPT),
+        sys.executable, str(inject_script),
         "--fault",     fault,
         "--service",   service,
         "--duration",  str(duration),
@@ -249,6 +270,7 @@ def run(
     )
     injection_time = _ts()
     timeline["events"]["injection_start"] = injection_time
+    timeline["injector"] = injector_label
     click.echo(f"  inject PID={inject_proc.pid}")
 
     slo_monitor = SLOMonitor(gen, threshold_ms=dynamic_threshold_ms)
@@ -296,8 +318,8 @@ def run(
 
     click.echo(
         f"[5/7] Collecting metrics …\n"
-        f"  baseline [{_iso(baseline_window_start)} → {_iso(baseline_window_end)}]\n"
-        f"  fault    [{_iso(fault_window_start)} → {_iso(fault_window_end)}]"
+        f"  baseline [{_iso(baseline_window_start)} to {_iso(baseline_window_end)}]\n"
+        f"  fault    [{_iso(fault_window_start)} to {_iso(fault_window_end)}]"
     )
     try:
         df     = client.fetch_metrics(baseline_window_start, fault_window_end)
