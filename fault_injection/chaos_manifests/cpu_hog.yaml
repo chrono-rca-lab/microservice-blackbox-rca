@@ -1,0 +1,17 @@
+apiVersion: chaos-mesh.org/v1alpha1
+kind: StressChaos
+metadata:
+  name: cpu-hog-TARGET
+  namespace: boutique
+spec:
+  mode: one
+  selector:
+    namespaces:
+      - boutique
+    labelSelectors:
+      app: TARGET_SERVICE
+  stressors:
+    cpu:
+      workers: 2
+      load: 100
+  duration: "DURATION_VALUE"

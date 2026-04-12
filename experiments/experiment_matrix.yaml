@@ -1,10 +1,13 @@
-# Experiment matrix — defines all fault injection runs for the paper.
+# Experiment matrix for microservice-blackbox-rca
 # Run with: python eval/run_batch.py --matrix experiments/experiment_matrix.yaml
+#
+# injector: "chaos" uses fault_injection/chaos_inject.py (Chaos Mesh CRDs)
+#           "exec"  uses fault_injection/inject.py        (kubectl exec — shell required)
 #
 # Injectable services (have /bin/sh): adservice, currencyservice, emailservice,
 #                                     paymentservice, recommendationservice
-# Distroless (no shell, cannot inject): cartservice, checkoutservice, frontend,
-#                                       productcatalogservice, shippingservice
+# Distroless (no shell, cannot inject via exec): cartservice, checkoutservice, frontend,
+#                                                productcatalogservice, shippingservice
 #
 # Requires infra/boutique-manifests-patched.yaml to be applied so that:
 #   - readOnlyRootFilesystem is removed  (disk_hog needs writable /tmp)
@@ -15,61 +18,124 @@
 cooldown_seconds: 120
 
 experiments:
-  # ── cpu_hog ────────────────────────────────────────────────────────────────
-  - fault: cpu_hog
-    service: recommendationservice
-    duration: 120
 
-  - fault: cpu_hog
-    service: emailservice
-    duration: 120
-
-  - fault: cpu_hog
-    service: currencyservice
-    duration: 120
-
+  # ── cpu_hog ──────────────────────────────────────────────────────────────
+  # Shell-based services (exec works; chaos also works)
   - fault: cpu_hog
     service: adservice
     duration: 120
+    injector: chaos
 
-  # ── mem_leak ───────────────────────────────────────────────────────────────
+  - fault: cpu_hog
+    service: recommendationservice
+    duration: 120
+    injector: chaos
+
+  - fault: cpu_hog
+    service: emailservice
+    duration: 120
+    injector: chaos
+
+  - fault: cpu_hog
+    service: currencyservice
+    duration: 120
+    injector: chaos
+
+  # Distroless Go services — StressChaos injects a binary, may work
+  - fault: cpu_hog
+    service: frontend
+    duration: 120
+    injector: chaos
+
+  - fault: cpu_hog
+    service: checkoutservice
+    duration: 120
+    injector: chaos
+
+  # ── mem_leak ─────────────────────────────────────────────────────────────
   - fault: mem_leak
     service: recommendationservice
     duration: 120
-
-  - fault: mem_leak
-    service: paymentservice
-    duration: 120
+    injector: chaos
 
   - fault: mem_leak
     service: emailservice
     duration: 120
+    injector: chaos
 
-  # ── disk_hog (requires patched manifest for writable /tmp) ─────────────────
+  - fault: mem_leak
+    service: frontend
+    duration: 120
+    injector: chaos
+
+  # ── net_delay ────────────────────────────────────────────────────────────
+  # NetworkChaos works on distroless — big win, covers all services
+  - fault: net_delay
+    service: frontend
+    duration: 120
+    injector: chaos
+
+  - fault: net_delay
+    service: checkoutservice
+    duration: 120
+    injector: chaos
+
+  - fault: net_delay
+    service: cartservice
+    duration: 120
+    injector: chaos
+
+  - fault: net_delay
+    service: productcatalogservice
+    duration: 120
+    injector: chaos
+
+  - fault: net_delay
+    service: currencyservice
+    duration: 120
+    injector: chaos
+
+  - fault: net_delay
+    service: paymentservice
+    duration: 120
+    injector: chaos
+
+  - fault: net_delay
+    service: shippingservice
+    duration: 120
+    injector: chaos
+
+  # ── disk_hog ─────────────────────────────────────────────────────────────
   - fault: disk_hog
     service: currencyservice
     duration: 120
+    injector: chaos
 
   - fault: disk_hog
     service: emailservice
     duration: 120
+    injector: chaos
 
-  - fault: disk_hog
-    service: paymentservice
+  # ── packet_loss ──────────────────────────────────────────────────────────
+  - fault: packet_loss
+    service: frontend
     duration: 120
+    injector: chaos
 
-  # net_delay excluded: tc/iptables not installed in container images (Alpine/Node.js).
-  # NET_ADMIN capability grants permission but the binaries aren't present.
-  # Additionally, network latency is not observable in the current metric set
-  # (cpu_rate, mem_wss, fs_*_rate, net_*_rate all measure throughput, not latency).
+  - fault: packet_loss
+    service: cartservice
+    duration: 120
+    injector: chaos
 
-  # ── concurrent faults ──────────────────────────────────────────────────────
+  # ── concurrent faults ────────────────────────────────────────────────────
   - fault: cpu_hog
     service: emailservice
     concurrent: currencyservice
     duration: 120
+    injector: chaos
 
-  - fault: mem_leak
-    service: recommendationservice
-    concurrent: paymentservice
+  - fault: net_delay
+    service: frontend
+    concurrent: checkoutservice
     duration: 120
+    injector: chaos

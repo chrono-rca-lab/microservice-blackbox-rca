@@ -1,0 +1,16 @@
+apiVersion: chaos-mesh.org/v1alpha1
+kind: IOChaos
+metadata:
+  name: disk-hog-TARGET
+  namespace: boutique
+spec:
+  action: latency
+  mode: one
+  selector:
+    namespaces:
+      - boutique
+    labelSelectors:
+      app: TARGET_SERVICE
+  delay: "100ms"
+  volumePath: /tmp
+  duration: "DURATION_VALUE"
