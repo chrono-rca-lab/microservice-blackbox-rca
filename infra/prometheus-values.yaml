@@ -1,14 +1,14 @@
 # Custom values for kube-prometheus-stack on kind.
-# Sets cAdvisor scrape interval to 5s (1s is too aggressive for kind).
+# 1s scrape gives ~120 samples per 120s fault window — enough for CUSUM + FFT.
 prometheus:
   prometheusSpec:
-    scrapeInterval: 5s
-    evaluationInterval: 5s
+    scrapeInterval: 1s
+    evaluationInterval: 1s
 
 # kubelet / cAdvisor scrape config override
 kubelet:
   serviceMonitor:
-    interval: 5s
+    interval: 1s
     cAdvisorRelabelings:
       # Keep the job label as "kubelet"
       - action: replace

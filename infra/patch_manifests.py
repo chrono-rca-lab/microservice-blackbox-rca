@@ -40,8 +40,10 @@ SCRIPT_DIR = Path(__file__).parent
 # fault can propagate. 500m gives the service ~250ms/s of CPU headroom while
 # still driving cpu_throttle_ratio to ~50% — a strong, clean RCA signal.
 RESOURCE_OVERRIDES: dict[str, dict] = {
+    # CPU: kind nodes + .NET GC can starve the default 200–300m budget; gRPC probes
+    # use timeout=1s and fail → liveness SIGKILL (exit 137) before OOM shows up.
     "cartservice": {
-        "limits":   {"cpu": "300m", "memory": "256Mi"},
+        "limits":   {"cpu": "500m", "memory": "256Mi"},
         "requests": {"cpu": "200m", "memory": "128Mi"},
     },
     "adservice": {
@@ -65,6 +67,26 @@ RESOURCE_OVERRIDES: dict[str, dict] = {
         "requests": {"cpu": "100m"},
     },
 }
+
+# Probe timeout (seconds). Upstream often uses 1s; on kind, health checks can miss
+# that window → pods never become Ready.
+_PROBE_SEC = 3
+PROBE_TIMEOUT_OVERRIDES: dict[str, int] = dict.fromkeys(
+    (
+        "adservice",
+        "cartservice",
+        "checkoutservice",
+        "currencyservice",
+        "emailservice",
+        "frontend",
+        "paymentservice",
+        "productcatalogservice",
+        "recommendationservice",
+        "redis-cart",
+        "shippingservice",
+    ),
+    _PROBE_SEC,
+)
 
 
 def _patch_container(container: dict) -> None:
@@ -105,6 +127,12 @@ def _patch_deployment(doc: dict) -> None:
                 resources.setdefault("limits", {}).update(overrides["limits"])
             if "requests" in overrides:
                 resources.setdefault("requests", {}).update(overrides["requests"])
+        if deploy_name in PROBE_TIMEOUT_OVERRIDES:
+            ts = PROBE_TIMEOUT_OVERRIDES[deploy_name]
+            for key in ("livenessProbe", "readinessProbe"):
+                p = c.get(key)
+                if isinstance(p, dict):
+                    p["timeoutSeconds"] = ts
     for c in pod_spec.get("initContainers", []):
         _patch_container(c)
 
