@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 REQUIRED_FIELDS = {"run_id", "fault_type", "target_services", "inject_time_utc", "duration_seconds"}
-VALID_FAULTS = {"cpu_hog", "mem_leak", "net_delay", "disk_hog"}
+VALID_FAULTS = {"cpu_hog", "mem_leak", "net_delay", "disk_hog", "packet_loss"}
 
 
 def make_run_id() -> str:

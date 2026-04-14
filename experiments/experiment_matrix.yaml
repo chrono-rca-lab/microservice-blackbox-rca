@@ -106,15 +106,17 @@ experiments:
     injector: chaos
 
   # ── disk_hog ─────────────────────────────────────────────────────────────
+  # IOChaos requires FUSE (unavailable on kind) — run_experiment.py
+  # automatically falls back to kubectl-exec (shell-based inject.py).
   - fault: disk_hog
     service: currencyservice
     duration: 120
-    injector: chaos
+    injector: exec
 
   - fault: disk_hog
     service: emailservice
     duration: 120
-    injector: chaos
+    injector: exec
 
   # ── packet_loss ──────────────────────────────────────────────────────────
   - fault: packet_loss
