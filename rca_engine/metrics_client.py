@@ -14,34 +14,34 @@ import requests
 
 
 # PromQL expressions keyed by a short metric name.
-# Rate metrics use a 30s window, which safely spans two 5s-interval scrapes.
+# Rate metrics use a 5s window (spans ~5 scrapes at 1s interval).
 QUERIES: dict[str, str] = {
     "cpu_rate": (
-        'rate(container_cpu_usage_seconds_total{namespace="boutique",container!=""}[30s])'
+        'rate(container_cpu_usage_seconds_total{namespace="boutique",container!=""}[5s])'
     ),
     # Fraction of CFS scheduling periods where the pod was CPU-throttled.
     # Rises sharply when a cpu_hog fault hits a resource-limited container,
     # even when cpu_rate stays flat at its limit.
     # Note: cAdvisor emits this without a container label — it is pod-scoped.
     "cpu_throttle_ratio": (
-        'sum by (pod, namespace) (rate(container_cpu_cfs_throttled_periods_total{namespace="boutique"}[30s]))'
+        'sum by (pod, namespace) (rate(container_cpu_cfs_throttled_periods_total{namespace="boutique"}[5s]))'
         ' / '
-        'sum by (pod, namespace) (rate(container_cpu_cfs_periods_total{namespace="boutique"}[30s]))'
+        'sum by (pod, namespace) (rate(container_cpu_cfs_periods_total{namespace="boutique"}[5s]))'
     ),
     "mem_wss": (
         'container_memory_working_set_bytes{namespace="boutique",container!=""}'
     ),
     "net_rx_rate": (
-        'rate(container_network_receive_bytes_total{namespace="boutique"}[30s])'
+        'rate(container_network_receive_bytes_total{namespace="boutique"}[5s])'
     ),
     "net_tx_rate": (
-        'rate(container_network_transmit_bytes_total{namespace="boutique"}[30s])'
+        'rate(container_network_transmit_bytes_total{namespace="boutique"}[5s])'
     ),
     "fs_read_rate": (
-        'rate(container_fs_reads_bytes_total{namespace="boutique",container!=""}[30s])'
+        'rate(container_fs_reads_bytes_total{namespace="boutique",container!=""}[5s])'
     ),
     "fs_write_rate": (
-        'rate(container_fs_writes_bytes_total{namespace="boutique",container!=""}[30s])'
+        'rate(container_fs_writes_bytes_total{namespace="boutique",container!=""}[5s])'
     ),
 }
 
@@ -97,7 +97,7 @@ class PrometheusMetricsClient:
         self,
         start_time: float,
         end_time: float,
-        step: str = "5s",
+        step: str = "1s",
     ) -> pd.DataFrame:
         """Fetch all metrics for the default namespace over [start_time, end_time].
 
@@ -146,7 +146,7 @@ class PrometheusMetricsClient:
         self,
         start_time: float,
         end_time: float,
-        step: str = "5s",
+        step: str = "1s",
     ) -> dict[str, dict[str, np.ndarray]]:
         """Return metrics as a nested dict for algorithmic processing.
 
