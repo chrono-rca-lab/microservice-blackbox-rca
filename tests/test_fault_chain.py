@@ -426,7 +426,7 @@ class TestAnalyzeMetric:
         fault = np.concatenate([np.ones(5) * 5.0, np.ones(19) * 50.0])
         result = _analyze_metric(baseline, fault)
         assert result is not None
-        cusum_cps, onsets, dirs = result
+        cusum_cps, onsets, dirs, confs = result
         assert len(onsets) >= 1
         assert all(isinstance(o, (int, np.integer)) for o in onsets)
 
@@ -443,7 +443,7 @@ class TestAnalyzeMetric:
         fault = np.concatenate([np.ones(5) * 100.0, np.ones(19) * 200.0])
         result = _analyze_metric(baseline, fault)
         assert result is not None
-        _, onsets, _ = result
+        _, onsets, _, _ = result
         assert len(onsets) >= 1
 
     def test_noisy_baseline_small_fault(self):
@@ -455,5 +455,9 @@ class TestAnalyzeMetric:
         fault = rng.normal(10.5, 2.0, 24)
         result = _analyze_metric(baseline, fault)
         if result is not None:
-            _, onsets, _ = result
+            _, onsets, _, _ = result
+            assert len(onsets) <= 2
+        result = _analyze_metric(baseline, fault)
+        if result is not None:
+            _, onsets, _, _ = result
             assert len(onsets) <= 2

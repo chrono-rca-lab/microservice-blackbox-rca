@@ -13,7 +13,7 @@ from typing import Any
 
 import numpy as np
 
-from rca_engine.change_point import detect_change_points_bilateral
+from rca_engine.change_point import detect_change_points_bootstrap
 from rca_engine.dependency import get_dependency_graph, has_path
 from rca_engine.normal_model import NormalModel
 from rca_engine.predictability_filter import filter_abnormal_change_points
@@ -67,12 +67,14 @@ def pinpoint(
     service_onsets: dict[str, float] = {}
     service_trends: dict[str, str] = {}
     service_abnormal_metrics: dict[str, list[str]] = {}
+    service_metric_confidences: dict[str, dict[str, float]] = {}
 
     for service, metrics in metric_matrix.items():
         earliest_detection: float | None = None
         earliest_onset: float | None = None
         all_directions: list[str] = []
         abnormal_metric_names: list[str] = []
+        metric_confs: dict[str, float] = {}
 
         for metric_name, full_series in metrics.items():
             baseline_data, fault_data = _split_series(
@@ -85,9 +87,11 @@ def pinpoint(
             if result is None:
                 continue
 
-            cusum_indices, onset_indices, directions = result
+            cusum_indices, onset_indices, directions, confidences = result
             abnormal_metric_names.append(metric_name)
             all_directions.extend(directions)
+            if confidences:
+                metric_confs[metric_name] = max(confidences)
 
             # CUSUM detection times (for concurrency grouping)
             for idx in cusum_indices:
@@ -106,6 +110,7 @@ def pinpoint(
             service_onsets[service] = earliest_onset or earliest_detection
             service_trends[service] = _determine_trend(all_directions)
             service_abnormal_metrics[service] = abnormal_metric_names
+            service_metric_confidences[service] = metric_confs
 
     if not service_onsets:
         return []
@@ -136,6 +141,7 @@ def pinpoint(
             service_onsets[svc],
             service_abnormal_metrics[svc],
             is_root_cause=(svc in pinpointed_set),
+            metric_confidences=service_metric_confidences.get(svc, {}),
         )
         entry["rank"] = i
         result.append(entry)
@@ -206,12 +212,11 @@ def _analyze_metric(
     fault_data: np.ndarray,
     num_bins: int = 100,
     cusum_k_factor: float = 0.5,
-    cusum_h_factor: float = 10.0,
     fft_Q: int = 20,
-) -> tuple[list[int], list[int], list[str]] | None:
+) -> tuple[list[int], list[int], list[str], list[float]] | None:
     """NormalModel -> CUSUM -> FFT filter -> tangent rollback.
 
-    Returns ``(cusum_indices, refined_onset_indices, directions)`` where
+    Returns ``(cusum_indices, refined_onset_indices, directions, confidences)`` where
     indices are into *fault_data*.  Returns ``None`` if no abnormal change
     points are found.
     """
@@ -228,31 +233,50 @@ def _analyze_metric(
     # change to exceed 1% of the combined data range before triggering.
     combined_range = float(np.ptp(np.concatenate([baseline_data, fault_data])))
     sigma_floor = max(abs(mu_0) * 0.01, combined_range * 0.01, 1e-6)
-    sigma_0 = max(sigma_0, sigma_floor)
-
     # 3. CUSUM change-point detection
-    cps, directions = detect_change_points_bilateral(
-        fault_data, mu_0, sigma_0,
-        k_factor=cusum_k_factor, h_factor=cusum_h_factor,
+    result = detect_change_points_bootstrap(
+        time_series=fault_data,
+        baseline_data=baseline_data,
+        k=cusum_k_factor,
     )
-    if not cps:
+    if not result.change_points:
         return None
 
-    # 4. FFT predictability filter
-    abnormal_cps = filter_abnormal_change_points(
-        fault_data, cps, pred_errors, Q=fft_Q,
+    # 4. FFT predictability filter on CUSUM candidate alarms
+    g = result.cusum_scores
+    h = result.bootstrap_threshold
+    crossings = np.where(g >= h)[0].tolist()
+
+    abnormal_crossings = filter_abnormal_change_points(
+        fault_data, crossings, pred_errors, Q=fft_Q,
     )
-    if not abnormal_cps:
+    if not abnormal_crossings:
         return None
 
-    # Keep only directions for surviving change points
-    cp_set = set(abnormal_cps)
-    surviving_dirs = [d for cp, d in zip(cps, directions) if cp in cp_set]
+    # 5. Validate the bootstrap onsets using the abnormal alarms
+    surviving_onsets = set()
+    for cp in abnormal_crossings:
+        # Walk back to the last reset of the CUSUM trajectory to find the onset
+        j = cp - 1
+        while j >= 0 and g[j] > 0:
+            j -= 1
+        onset = max(0, j + 1)
+        surviving_onsets.add(onset)
 
-    # 5. Tangent rollback for each abnormal change point
-    refined = [rollback_onset(fault_data, cp) for cp in abnormal_cps]
+    merged_onsets = []
+    merged_dirs = []
+    merged_confs = []
+    for cp, d in zip(result.change_points, result.directions):
+        # A change point survives if its onset was verified by an abnormal alarm
+        if any(abs(cp - s_onset) <= 2 for s_onset in surviving_onsets):
+            merged_onsets.append(cp)
+            merged_dirs.append(d)
+            merged_confs.append(result.confidence_scores.get(cp, 0.0))
 
-    return abnormal_cps, refined, surviving_dirs
+    if not merged_onsets:
+        return None
+
+    return abnormal_crossings, merged_onsets, merged_dirs, merged_confs
 
 
 # -----------------------------------------------------------------------
@@ -295,8 +319,12 @@ def _make_entry(
     onset_time: float,
     abnormal_metrics: list[str],
     is_root_cause: bool,
+    metric_confidences: dict[str, float] | None = None,
 ) -> dict[str, Any]:
-    confidence = len(abnormal_metrics) / TOTAL_METRICS
+    if metric_confidences and abnormal_metrics:
+        confidence = sum(metric_confidences.get(m, 0.0) for m in abnormal_metrics) / len(abnormal_metrics)
+    else:
+        confidence = len(abnormal_metrics) / TOTAL_METRICS
     return {
         "service": service,
         "onset_time": onset_time,
