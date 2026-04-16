@@ -12,8 +12,9 @@ If no metric on the component shows any abnormal behavior the result is
 None, and the FChain master excludes this component from the propagation
 chain.
 
-FChain monitors exactly 6 system-level metrics per VM:
-  cpu, memory, net_in, net_out, disk_read, disk_write
+FChain monitors exactly 7 system-level metrics per VM:
+"cpu_rate", "cpu_throttle_ratio", "mem_wss",
+    "net_rx_rate", "net_tx_rate", "fs_read_rate", "fs_write_rate"
 
 Not all 6 need to be present.  Aggregation works on whatever subset is
 available.
@@ -30,7 +31,7 @@ from __future__ import annotations
 # Constants — single source of truth for metric names used across the pipeline
 # ---------------------------------------------------------------------------
 
-#: The 6 system-level metrics FChain monitors per VM (FChain paper Section III-A).
+#: The 7 system-level metrics FChain monitors per VM (FChain paper Section III-A).
 MONITORED_METRICS: tuple[str, ...] = (
     "cpu_rate", "cpu_throttle_ratio", "mem_wss",
     "net_rx_rate", "net_tx_rate", "fs_read_rate", "fs_write_rate"

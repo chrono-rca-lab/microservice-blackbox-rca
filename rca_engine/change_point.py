@@ -408,7 +408,7 @@ def run_layer1(
     """
     Full Layer 1 pipeline for one metric on one VM.
 
-    Run this independently for each of the 6 metrics per VM.
+    Run this independently for each of the 7 metrics per VM.
     Results feed into Layer 2 (PRESS prediction error filtering).
 
     Parameters

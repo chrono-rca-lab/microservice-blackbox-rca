@@ -338,7 +338,6 @@ def pinpoint_faults(
 # ---------------------------------------------------------------------------
 # Per-metric analysis pipeline
 # ---------------------------------------------------------------------------
-
 def _analyze_metric(
     baseline_data: np.ndarray,
     fault_data: np.ndarray,
@@ -346,76 +345,67 @@ def _analyze_metric(
     cusum_k_factor: float = 0.5,
     fft_Q: int = 20,
 ) -> tuple[list[int], list[str], list[float]] | None:
-    """Run Layers 1-4 for a single metric of a single service.
+    """Layers 1-4 for a single metric of a single service.
 
-    Applies the Section II-B pipeline in sequence:
-
-    1. Fit a Markov-chain NormalModel on *baseline_data* so that the
-       model captures the metric's normal transition patterns before any
-       fault was introduced (Layer 2 setup).
-
-    2. Run CUSUM + Bootstrap on *fault_data* to find all candidate
-       change points (Layer 1).  If CUSUM detects nothing, return None.
-
-    3. Compute Markov prediction errors at every index where the CUSUM
-       score crosses the bootstrap threshold.  A high prediction error
-       means the model was genuinely surprised — the change was not
-       seen during normal operation (Layer 2).
-
-    4. Apply the FFT burst-threshold filter to the prediction errors.
-       For each crossing, compare the error against the 90th-percentile
-       magnitude of the local high-frequency burst signal.  Only crossings
-       whose error exceeds that threshold survive (Layer 3).  If none
-       survive, return None.
-
-    5. Walk each surviving crossing back through the full Layer-1 change-
-       point list using tangent-based rollback to find the true start of
-       the abnormal slope rather than the point where CUSUM first alarmed
-       (Layer 4).
+    Pipeline
+    --------
+    1. Fit NormalModel on baseline using combined data range (Layer 2 setup).
+    2. Run CUSUM + Bootstrap on fault window (Layer 1).
+    3. Build onset->crossing mapping: for each onset in result.change_points,
+       find the first CUSUM threshold crossing at or after that onset.
+    4. Compute prediction error AT THE CROSSING for each onset (Layer 2).
+       Crossing-point evaluation gives strong signal for both step changes
+       and gradual drifts.
+    5. Remap errors to be keyed by ONSET index (not crossing index).
+       Layer 3 receives onset-keyed errors and centres its FFT window on
+       the onset (calm pre-fault region -> low burstiness threshold).
+    6. FFT burst filter on onset-keyed errors (Layer 3).
+       Surviving indices are onset indices, correct for Layer 4.
+    7. Tangent-based rollback from each surviving onset (Layer 4).
 
     Parameters
     ----------
-    baseline_data :
-        Clean metric samples from the baseline window.  Used to fit the
-        NormalModel and compute CUSUM baseline statistics.
-    fault_data :
-        Metric samples from the fault window.  Change-point detection
-        and filtering operate on this array; returned indices index it.
-    num_bins :
-        Number of equal-width discretisation bins for the Markov model.
-        40 bins per the PRESS paper specification.
-    cusum_k_factor :
-        CUSUM reference value *k*.  A value of 0.5 targets shifts of
-        approximately 1 standard deviation (k = Δ/2).
-    fft_Q :
-        Half-window size (samples) for the FFT burst-threshold filter.
-        The local window around each crossing spans [t-Q, t+Q].
+    baseline_data : np.ndarray
+        Clean baseline window. Used to fit NormalModel and calibrate CUSUM.
+    fault_data : np.ndarray
+        Fault window (look-back window). The series being analyzed.
+    num_bins : int
+        NormalModel discretisation bins. PRESS paper: 40.
+    cusum_k_factor : float
+        CUSUM reference value k. Default 0.5 detects ~1-sigma shifts.
+    fft_Q : int
+        FFT local half-window size in samples. FChain paper: 20.
 
     Returns
     -------
     tuple[list[int], list[str], list[float]] | None
-        ``(onset_indices, directions, confidences)`` where every index
-        is into *fault_data*.  ``directions`` is ``'up'`` or ``'down'``
-        per change point.  ``confidences`` are bootstrap confidence
-        scores in [0, 1].  Returns ``None`` if no abnormal change points
-        survive the full pipeline.
+        (onset_indices, directions, confidences) where indices are into
+        fault_data. Returns None if no abnormal change points survive.
     """
-    # Layer 2 setup — fit the Markov model on clean baseline behaviour.
-    # Bin edges are fixed to [lo, hi] derived from the baseline so that
-    # fault-period values outside this range land in the boundary bins
-    # and are still handled without index errors.
-    lo = float(np.min(baseline_data))
-    hi = float(np.max(baseline_data))
+
+    # ------------------------------------------------------------------
+    # Step 1: Fit NormalModel (Layer 2 setup)
+    # ------------------------------------------------------------------
+    # Range from combined data: fault values outside the baseline range
+    # (e.g. CPU spike to 95% from 40-60% baseline) trigger the unseen-state
+    # path in NormalModel which returns metric_range as the error.
+    # Using only baseline range would underestimate metric_range, making
+    # the unseen-state signal potentially too weak to survive Layer 3.
+    all_data = np.concatenate([baseline_data, fault_data])
+    lo = float(np.min(all_data))
+    hi = float(np.max(all_data))
     if hi == lo:
-        hi = lo + 1e-6   # prevent degenerate single-bin model
+        hi = lo + 1e-6
 
     model = NormalModel(
         num_bins=num_bins,
         metric_min=lo,
         metric_max=hi,
-    ).fit(baseline_data)
+    ).fit(baseline_data)   # fit on baseline only — never on fault data
 
-    # Layer 1 — CUSUM + Bootstrap change-point detection on fault window.
+    # ------------------------------------------------------------------
+    # Step 2: CUSUM + Bootstrap change-point detection (Layer 1)
+    # ------------------------------------------------------------------
     result = run_layer1(
         time_series=fault_data,
         baseline_data=baseline_data,
@@ -424,61 +414,98 @@ def _analyze_metric(
     if not result.change_points:
         return None
 
-    # Layer 2 — prediction errors at CUSUM threshold-crossing indices.
-    # The CUSUM score g crosses the bootstrap threshold h at the indices
-    # where the detector first accumulated enough evidence of a change.
-    # We compute the Markov prediction error at each such index: a high
-    # error confirms the change was genuinely novel, not a known pattern.
     g = result.cusum_combined
     h = result.bootstrap_threshold
-    cusum_crossings = np.where(g >= h)[0].tolist()
 
-    pred_errors_dict = model.prediction_errors_for(cusum_crossings, fault_data)
+    # ------------------------------------------------------------------
+    # Step 3: Build onset -> crossing mapping
+    # ------------------------------------------------------------------
+    # For each onset estimate, find the first sample at or after the onset
+    # where the CUSUM score crossed the bootstrap threshold.
+    # This is the point where deviation is statistically unambiguous.
+    #
+    # onset    = result.change_points[i]  (last-reset heuristic)
+    # crossing = first t >= onset where g[t] >= h
+    #
+    # For a gradual drift: onset=30, crossing=50 (different indices)
+    # For a step change:   onset=40, crossing=40 or 41 (same or adjacent)
+    onset_to_crossing: dict[int, int] = {}
+    for onset in result.change_points:
+        candidates = np.where(g[onset:] >= h)[0]
+        if len(candidates) > 0:
+            onset_to_crossing[onset] = onset + int(candidates[0])
+        else:
+            # Safety fallback: no crossing found after onset.
+            # This can happen if bootstrap threshold is very tight.
+            # Use the onset itself — error will be evaluated there.
+            onset_to_crossing[onset] = onset
 
-    # Layer 3 — FFT burst-threshold filter.
-    # For each crossing, estimate the local burstiness of the metric using
-    # FFT (top 90% frequencies by index).  A crossing is abnormal only if
-    # its prediction error exceeds the 90th-percentile burst magnitude,
-    # ensuring that naturally bursty metrics are not over-flagged.
-    abnormal_crossings = filter_abnormal_change_points(
-        fault_data, pred_errors_dict, Q=fft_Q,
+    # ------------------------------------------------------------------
+    # Step 4: Prediction error AT THE CROSSING for each onset (Layer 2)
+    # ------------------------------------------------------------------
+    # Evaluate the Markov model's surprise at the crossing index, not the
+    # onset. At the crossing, the metric has deviated far enough that:
+    #   - For step changes: the new value is outside the baseline range
+    #                       -> unseen state -> error = metric_range
+    #   - For gradual drifts: the value has drifted outside the baseline
+    #                          range by the time CUSUM crosses h
+    #                          -> unseen state -> error = metric_range
+    #   - For both types: error is high -> survives Layer 3 correctly
+    crossing_indices = list(onset_to_crossing.values())
+    pred_errors_at_crossing: dict[int, float] = model.prediction_errors_for(
+        crossing_indices, fault_data,
     )
-    if not abnormal_crossings:
+
+    # Remap: key by ONSET index for Layer 3.
+    # Layer 3 uses the dict key as the candidate CP index — it centres
+    # its FFT window there and passes the index to Layer 4.
+    # By keying on onset, Layer 3's FFT window is centred on the calm
+    # pre-fault region, giving a low burstiness threshold and making
+    # detection easier (more sensitive) for gradual faults.
+    pred_errors_by_onset: dict[int, float] = {
+        onset: pred_errors_at_crossing.get(crossing, 0.0)
+        for onset, crossing in onset_to_crossing.items()
+    }
+
+    # ------------------------------------------------------------------
+    # Step 5: FFT burst filter (Layer 3)
+    # ------------------------------------------------------------------
+    # Input:  pred_errors_by_onset  (onset-keyed, crossing-point errors)
+    # Output: list of onset indices that survive the burst threshold test
+    # FFT window is centred on each onset index (calm region -> sensitive)
+    abnormal_cps: list[int] = filter_abnormal_change_points(
+        fault_data, pred_errors_by_onset, Q=fft_Q,
+    )
+    if not abnormal_cps:
         return None
 
-    # Layer 4 — tangent-based rollback.
-    # Each surviving crossing was where CUSUM alarmed, but the true onset
-    # of the abnormal behaviour may be earlier on the same slope.  Walk
-    # backward through the full Layer-1 change-point list comparing
-    # adjacent tangents; stop when the slope changes direction.
-    all_layer1_cps = result.change_points
+    # ------------------------------------------------------------------
+    # Pre-build direction/confidence lookup (Issue 2 fix)
+    # ------------------------------------------------------------------
+    cp_to_direction:  dict[int, str]   = dict(
+        zip(result.change_points, result.directions)
+    )
+    cp_to_confidence: dict[int, float] = result.confidence_scores
 
-    onset_indices: list[int] = []
-    directions: list[str] = []
-    confidences: list[float] = []
+    # ------------------------------------------------------------------
+    # Step 6: Tangent-based rollback from each surviving onset (Layer 4)
+    # ------------------------------------------------------------------
+    # abnormal_cps are onset indices and are members of result.change_points,
+    # so rollback_onset can step backward through result.change_points
+    # correctly without needing the guard branch for missing indices.
+    onset_indices: list[int]   = []
+    directions:    list[str]   = []
+    confidences:   list[float] = []
 
-    for cp in abnormal_crossings:
+    for cp in abnormal_cps:
         refined_onset = rollback_onset(
             series=fault_data,
             abnormal_cp=cp,
-            all_change_points=all_layer1_cps,
+            all_change_points=result.change_points,
         )
         onset_indices.append(refined_onset)
-
-        # Attach the direction and confidence of the nearest Layer-1
-        # change point to the refined onset for use in trend aggregation
-        # and output confidence scoring.
-        closest_l1_cp = min(
-            all_layer1_cps,
-            key=lambda c: abs(c - cp),
-            default=cp,
-        )
-        directions.append(result.directions[
-            all_layer1_cps.index(closest_l1_cp)
-        ] if closest_l1_cp in all_layer1_cps else "up")
-        confidences.append(
-            result.confidence_scores.get(closest_l1_cp, 0.0)
-        )
+        directions.append(cp_to_direction.get(cp, "up"))
+        confidences.append(cp_to_confidence.get(cp, 0.0))
 
     if not onset_indices:
         return None

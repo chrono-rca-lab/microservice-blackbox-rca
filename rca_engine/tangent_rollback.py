@@ -24,7 +24,7 @@ with forward / backward difference at the boundaries.
 
 Multi-metric aggregation
 ------------------------
-Each component exposes 6 metrics.  Rollback is run independently per
+Each component exposes 7 metrics.  Rollback is run independently per
 metric.  The component's onset time is the minimum across all metrics
 that show at least one abnormal change point.
 
