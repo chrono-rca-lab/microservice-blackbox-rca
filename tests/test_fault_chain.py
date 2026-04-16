@@ -432,7 +432,7 @@ class TestAnalyzeMetric:
 
     def test_flat_no_change(self):
         """No change -> None returned."""
-        baseline = np.ones(10) * 5.0
+        baseline = np.ones(100) * 5.0
         fault = np.ones(24) * 5.0
         result = _analyze_metric(baseline, fault)
         assert result is None
@@ -450,7 +450,7 @@ class TestAnalyzeMetric:
         """Noise in baseline: a small fault should NOT be detected if within
         normal variation."""
         rng = np.random.default_rng(123)
-        baseline = rng.normal(10.0, 2.0, 10)
+        baseline = rng.normal(10.0, 2.0, 100)
         # Fault that's within baseline noise range
         fault = rng.normal(10.5, 2.0, 24)
         result = _analyze_metric(baseline, fault)
