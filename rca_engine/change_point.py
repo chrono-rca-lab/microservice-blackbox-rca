@@ -257,6 +257,8 @@ def bootstrap_threshold(
 
     # Threshold = high quantile of bootstrap maxima
     h = float(np.percentile(maxima, confidence * 100))
+    if h == 0.0:
+        h = 1e-5
 
     return h, maxima
 
