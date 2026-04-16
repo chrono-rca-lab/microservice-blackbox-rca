@@ -119,19 +119,57 @@ python fault_injection/chaos_inject.py --fault cpu_hog --service emailservice --
 
 ## 7. Run a Single Experiment (inject → collect → RCA → score)
 
-Each `run_experiment` call:
-1. Starts the load generator
-2. Waits for a 60 s baseline
-3. Injects the fault (`chaos_inject.py` for most faults, `inject.py` for `disk_hog`)
-4. Waits the full fault duration (SLO monitor runs in background — metadata only)
-5. Collects a Prometheus metrics window anchored to injection time
-6. Runs the RCA engine
-7. Saves artifacts to `experiments/<run_id>/`
+There are two experiment runners with different RCA trigger strategies:
+
+| Script | RCA trigger | Best for |
+|---|---|---|
+| `eval/run_experiment.py` | Fixed: after full fault duration | Faults that don't spike frontend latency (mem_leak, off-critical-path services) |
+| `eval/run_experiment_slo.py` | Reactive: on first SLO violation + 30 s buffer | Faults on the critical latency path (net_delay, cpu_hog on checkout/cart/currency) |
+
+Both scripts share identical arguments, output the same artifacts, and fall back to the duration-elapsed trigger when no SLO violation is detected (so `run_experiment_slo.py` is a strict superset of `run_experiment.py`).
+
+### Fixed-duration trigger (`run_experiment.py`)
+
+Pipeline:
+1. Start load generator
+2. Wait 60 s baseline
+3. Inject fault
+4. **Sleep full fault duration** — SLO monitor records violation time as metadata only
+5. Collect metrics window anchored to injection time
+6. Run RCA
+7. Cleanup + recovery
+
+### SLO-violation trigger (`run_experiment_slo.py`)
+
+Pipeline:
+1. Start load generator
+2. Wait 60 s baseline
+3. Inject fault
+4. **Block on `violation_event.wait(timeout=duration)`** — unblocks the moment the SLO fires
+   - *Violation path*: wait 30 s observation buffer, then proceed to RCA (early)
+   - *No-violation path*: duration expires, proceed to RCA (identical to fixed-duration)
+5. Collect metrics window anchored to injection time (fault window end = now, not original duration end)
+6. Run RCA — `timeline.json` records `triggered_by: slo_violation | duration_elapsed`
+7. Cleanup + recovery (inject subprocess runs its full duration uninterrupted)
+
+### Which faults reliably trigger SLO violations
+
+The SLO measures frontend p95 across all loadgen journey steps (homepage → product → cart → checkout). Only faults on the **blocking call path** spike p95:
+
+| Service | Fault | Why it works |
+|---|---|---|
+| `checkoutservice` | `net_delay`, `cpu_hog` | Checkout blocks frontend directly |
+| `currencyservice` | `net_delay` | Called on every page — highest request hit rate |
+| `cartservice` | `net_delay` | Blocks add-to-cart and checkout cart lookup |
+| `productcatalogservice` | `net_delay` | Blocks homepage and product pages |
+| `emailservice` | `net_delay` | checkoutservice makes a synchronous gRPC call to emailservice before returning |
+| `paymentservice` | `net_delay` | Blocking call inside checkoutservice |
+
+Faults that **will not** trigger SLO violations: `mem_leak` on any service (Python/Go GC has no latency pauses), anything on `recommendationservice` or `adservice` (frontend doesn't wait for them), `disk_hog` (disk I/O not on hot path).
 
 ### cpu_hog experiments
 
 ```bash
-# All services — including distroless Go (frontend, checkoutservice, etc.)
 python eval/run_experiment.py --fault cpu_hog --service frontend           --duration 120
 python eval/run_experiment.py --fault cpu_hog --service checkoutservice    --duration 120
 python eval/run_experiment.py --fault cpu_hog --service adservice          --duration 120
@@ -151,11 +189,18 @@ python eval/run_experiment.py --fault mem_leak --service frontend               
 ### net_delay experiments
 
 ```bash
-# NetworkChaos works on all services including distroless
+# Fixed-duration trigger
 python eval/run_experiment.py --fault net_delay --service frontend              --duration 120
 python eval/run_experiment.py --fault net_delay --service cartservice           --duration 120
 python eval/run_experiment.py --fault net_delay --service checkoutservice       --duration 120
 python eval/run_experiment.py --fault net_delay --service productcatalogservice --duration 120
+
+# SLO-violation trigger (RCA fires as soon as p95 spikes, not after full 120 s)
+python eval/run_experiment_slo.py --fault net_delay --service checkoutservice       --duration 120
+python eval/run_experiment_slo.py --fault net_delay --service currencyservice       --duration 120
+python eval/run_experiment_slo.py --fault net_delay --service cartservice           --duration 120
+python eval/run_experiment_slo.py --fault net_delay --service emailservice          --duration 120
+python eval/run_experiment_slo.py --fault cpu_hog   --service checkoutservice       --duration 120
 ```
 
 ### disk_hog experiments (exec fallback, shell-capable services only)
@@ -172,14 +217,19 @@ python eval/run_experiment.py --fault cpu_hog  --service emailservice         --
 python eval/run_experiment.py --fault net_delay --service frontend             --concurrent checkoutservice --duration 120
 ```
 
-Each experiment takes roughly **4 minutes** (60 s baseline + fault duration + recovery). Artifacts land in `experiments/<run_id>/`:
+Each experiment takes roughly **4 minutes** with the fixed-duration runner (60 s baseline + fault duration + recovery). With the SLO-triggered runner, total time is shorter when a violation fires quickly. Artifacts land in `experiments/<run_id>/`:
 
 ```
 experiments/20260412_201315/
 ├── ground_truth.json   # injected fault + target services
-├── timeline.json       # timestamps + SLO violation metadata
+├── timeline.json       # timestamps, SLO violation metadata, triggered_by field
 ├── metrics.parquet     # per-service metric matrix (all 11 services)
 └── rca_results.json    # RCA engine output
+```
+
+The `timeline.json` from `run_experiment_slo.py` includes an extra field:
+```json
+"triggered_by": "slo_violation"   // or "duration_elapsed" if no violation fired
 ```
 
 ---

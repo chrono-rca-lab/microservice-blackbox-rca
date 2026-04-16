@@ -1,7 +1,10 @@
-"""Experiment orchestrator: inject → collect → RCA → score.
+"""Experiment orchestrator: inject → wait for SLO violation → collect → RCA → score.
 
-Fixed-schedule pipeline — the SLO monitor runs in the background and records
-diagnosis latency as metadata, but never gates the experiment.
+SLO-triggered pipeline — RCA fires as soon as the frontend SLO is violated
+(plus a short observation buffer to accumulate fault-window metrics).  Falls
+back to the fixed-duration trigger if no violation is detected within the fault
+window, so faults that don't manifest as customer-visible latency spikes still
+produce RCA output.
 
 Injector selection:
   - cpu_hog / mem_leak / net_delay / packet_loss → chaos_inject.py (Chaos Mesh)
@@ -15,15 +18,21 @@ Schedule:
     1. Start load generator
     2. Baseline period (BASELINE_DURATION s)
     3. Inject fault + start SLO monitor (background)
-    4. Wait fault duration
+    4. Wait until SLO violation fires OR fault duration elapses (whichever comes first)
+       4a. SLO violation path: wait SLO_OBSERVATION_BUFFER s, then proceed
+       4b. Duration-elapsed path: proceed immediately (same as run_experiment.py)
     5. Collect metrics (windows anchored to injection time)
     6. Run RCA
     7. Reap inject subprocess + recovery
 
-Usage:
-    python eval/run_experiment.py --fault cpu_hog   --service frontend            --duration 120
-    python eval/run_experiment.py --fault net_delay --service cartservice          --duration 120
-    python eval/run_experiment.py --fault disk_hog  --service currencyservice      --duration 120
+Best fault/service combos guaranteed to trigger SLO violations:
+    python eval/run_experiment_slo.py --fault net_delay  --service checkoutservice       --duration 120
+    python eval/run_experiment_slo.py --fault net_delay  --service currencyservice       --duration 120
+    python eval/run_experiment_slo.py --fault net_delay  --service cartservice           --duration 120
+    python eval/run_experiment_slo.py --fault net_delay  --service productcatalogservice --duration 120
+    python eval/run_experiment_slo.py --fault net_delay  --service emailservice          --duration 120
+    python eval/run_experiment_slo.py --fault cpu_hog    --service checkoutservice       --duration 120
+    python eval/run_experiment_slo.py --fault cpu_hog    --service frontend              --duration 120
 """
 
 import json
@@ -46,7 +55,7 @@ from infra.loadgen import WorkloadGenerator
 from rca_engine.metrics_client import PrometheusMetricsClient
 import fault_injection.ground_truth as gt
 
-EXPERIMENTS_DIR    = ROOT / "experiments"
+EXPERIMENTS_DIR     = ROOT / "experiments"
 CHAOS_INJECT_SCRIPT = ROOT / "fault_injection" / "chaos_inject.py"
 EXEC_INJECT_SCRIPT  = ROOT / "fault_injection" / "inject.py"
 
@@ -54,26 +63,27 @@ EXEC_INJECT_SCRIPT  = ROOT / "fault_injection" / "inject.py"
 # IOChaos needs FUSE which is unavailable on kind — fall back to shell script.
 EXEC_ONLY_FAULTS = {"disk_hog"}
 
-P95_THRESHOLD_MS     = 500   # floor for the dynamic SLO threshold
-BASELINE_DURATION    = 300    # seconds of steady-state before injection
-BASELINE_END_BUFFER  = 10    # seconds trimmed from the tail of the baseline window
-                              # (avoids capturing the transition moment in the normal distribution)
-RECOVERY_WAIT        = 30    # seconds of post-fault observation before stopping loadgen
-SLO_POLL_INTERVAL    = 5     # seconds between SLO log lines
-FRONTEND_URL         = "http://localhost:8080"
-PROMETHEUS_URL       = "http://localhost:9090"
-NAMESPACE            = "boutique"
+P95_THRESHOLD_MS      = 500   # floor for the dynamic SLO threshold
+BASELINE_DURATION     = 60    # seconds of steady-state before injection
+BASELINE_END_BUFFER   = 10    # seconds trimmed from the tail of the baseline window
+SLO_OBSERVATION_BUFFER = 30   # seconds to keep observing after SLO violation before running RCA
+RECOVERY_WAIT         = 30    # seconds of post-fault observation before stopping loadgen
+SLO_POLL_INTERVAL     = 5     # seconds between SLO polls
+FRONTEND_URL          = "http://localhost:8080"
+PROMETHEUS_URL        = "http://localhost:9090"
+NAMESPACE             = "boutique"
 
 
 # ---------------------------------------------------------------------------
-# SLO monitor — background thread, non-blocking, metadata only
+# SLO monitor — background thread, signals main thread on first violation
 # ---------------------------------------------------------------------------
 
 class SLOMonitor:
-    """Logs frontend p95 latency every SLO_POLL_INTERVAL seconds.
+    """Polls frontend p95 latency and signals the main thread on first violation.
 
-    Records the first violation timestamp.  Runs entirely in the background;
-    does NOT gate the experiment — the caller decides when to start/stop it.
+    Sets a threading.Event the moment the SLO is first breached so the main
+    orchestrator can unblock early and run RCA without waiting for the full
+    fault duration.
     """
 
     def __init__(self, gen: WorkloadGenerator, threshold_ms: float) -> None:
@@ -81,8 +91,14 @@ class SLOMonitor:
         self._threshold_ms = threshold_ms
         self._violation_time: float | None = None
         self._stop = threading.Event()
+        self._violation_event = threading.Event()   # set on first violation
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
+
+    @property
+    def violation_event(self) -> threading.Event:
+        """Event that is set the moment the first SLO violation is detected."""
+        return self._violation_event
 
     def start(self) -> None:
         self._stop.clear()
@@ -100,8 +116,6 @@ class SLOMonitor:
             return self._violation_time
 
     def _run(self) -> None:
-        # Wait first so the initial window is post-injection, not pre-injection.
-        # Runs silently — only logs when a violation fires.
         while not self._stop.wait(SLO_POLL_INTERVAL):
             p95 = self._gen.current_p95(window_seconds=10)
             if p95 is None:
@@ -110,6 +124,7 @@ class SLOMonitor:
             with self._lock:
                 if self._violation_time is None and ms > self._threshold_ms:
                     self._violation_time = time.time()
+                    self._violation_event.set()     # unblock main thread
                     click.echo(
                         f"  [slo] VIOLATION detected — p95={ms:.0f}ms"
                         f" (threshold={self._threshold_ms:.0f}ms)"
@@ -117,7 +132,7 @@ class SLOMonitor:
 
 
 # ---------------------------------------------------------------------------
-# RCA — calls fault_chain.pinpoint once implemented
+# RCA
 # ---------------------------------------------------------------------------
 
 def run_rca(
@@ -168,7 +183,7 @@ def _iso(ts: float) -> str:
               type=click.Choice(["cpu_hog", "mem_leak", "net_delay", "disk_hog", "packet_loss"]))
 @click.option("--service",    required=True, help="Primary target service name.")
 @click.option("--duration",   default=120, show_default=True,
-              help="Fault duration in seconds.")
+              help="Fault duration in seconds (also the max wait for an SLO violation).")
 @click.option("--run-id",     default=None,
               help="Run ID (timestamp-based ID generated if omitted).")
 @click.option("--rps",        default=5.0, show_default=True,
@@ -183,7 +198,7 @@ def run(
     rps: float,
     concurrent: str | None,
 ) -> None:
-    """Run a full end-to-end fault injection experiment."""
+    """Run a fault injection experiment triggered by SLO violation."""
     if run_id is None:
         run_id = gt.make_run_id()
 
@@ -193,7 +208,7 @@ def run(
     click.echo(f"\n{'='*60}")
     click.echo(f"  run_id  : {run_id}")
     click.echo(f"  fault   : {fault}  into  {service}")
-    click.echo(f"  duration: {duration}s")
+    click.echo(f"  duration: {duration}s  (max wait for SLO violation)")
     click.echo(f"{'='*60}\n")
 
     timeline: dict = {
@@ -201,6 +216,7 @@ def run(
         "fault":            fault,
         "service":          service,
         "duration_seconds": duration,
+        "trigger_mode":     "slo_violation",
         "events":           {},
         "windows":          {},
         "slo":              {},
@@ -243,9 +259,6 @@ def run(
     # ------------------------------------------------------------------
     # 3. Inject fault + start SLO monitor in background
     # ------------------------------------------------------------------
-    # Routing: disk_hog falls back to kubectl-exec (shell-based) because
-    # IOChaos requires FUSE kernel support unavailable on kind clusters.
-    # All other faults go through Chaos Mesh (works on distroless containers).
     use_exec = fault in EXEC_ONLY_FAULTS
     inject_script = EXEC_INJECT_SCRIPT if use_exec else CHAOS_INJECT_SCRIPT
     injector_label = "exec" if use_exec else "chaos"
@@ -277,14 +290,45 @@ def run(
     slo_monitor.start()
 
     # ------------------------------------------------------------------
-    # 4. Wait for fault to run its full duration
+    # 4. Wait until SLO violation fires OR full duration elapses
+    #
+    #    violation_event.wait(timeout=duration) blocks until either:
+    #      - The SLO monitor sets the event (violation detected) → returns True
+    #      - timeout seconds pass with no violation             → returns False
+    #
+    #    SLO-triggered path: wait SLO_OBSERVATION_BUFFER more seconds so
+    #    the fault window has enough metric samples for the RCA engine.
+    #
+    #    Duration-elapsed path: proceed immediately, identical to
+    #    run_experiment.py — used for faults that degrade system metrics
+    #    but don't surface as frontend latency spikes (e.g. mem_leak,
+    #    recommendationservice faults).
     # ------------------------------------------------------------------
-    click.echo(f"[4/7] Fault active — waiting {duration}s …")
-    time.sleep(duration)
-    fault_end_time = _ts()
-    timeline["events"]["fault_end"] = fault_end_time
+    click.echo(
+        f"[4/7] Waiting for SLO violation (max {duration}s) …"
+        f"  observation buffer after violation: {SLO_OBSERVATION_BUFFER}s"
+    )
+    slo_fired = slo_monitor.violation_event.wait(timeout=duration)
 
-    # Harvest SLO result — violation_time is None if threshold was never crossed
+    if slo_fired:
+        click.echo(
+            f"  [trigger] SLO violation fired — collecting {SLO_OBSERVATION_BUFFER}s "
+            f"of fault-window metrics before RCA …"
+        )
+        time.sleep(SLO_OBSERVATION_BUFFER)
+        triggered_by = "slo_violation"
+    else:
+        click.echo(
+            f"  [trigger] duration elapsed — no SLO violation in {duration}s, "
+            f"running RCA anyway (fault may not be on critical latency path)"
+        )
+        triggered_by = "duration_elapsed"
+
+    fault_end_time = _ts()
+    timeline["events"]["fault_end"]  = fault_end_time
+    timeline["triggered_by"]         = triggered_by
+
+    # Harvest SLO result
     violation_time = slo_monitor.stop()
     timeline["slo"]["violation_time"] = violation_time
     if violation_time is not None:
@@ -296,14 +340,6 @@ def run(
     # ------------------------------------------------------------------
     # 5. Collect metrics — windows anchored to injection time
     # ------------------------------------------------------------------
-    # baseline_window: [injection_time - BASELINE_DURATION,
-    #                   injection_time - BASELINE_END_BUFFER]
-    #   Trims the final BASELINE_END_BUFFER seconds before injection to avoid
-    #   capturing any transition effects in the normal-behaviour distribution.
-    #
-    # fault_window: [injection_time, fault_end_time]
-    #   The exact period the fault was active.
-
     baseline_window_start = injection_time - BASELINE_DURATION
     baseline_window_end   = injection_time - BASELINE_END_BUFFER
     fault_window_start    = injection_time
@@ -355,17 +391,20 @@ def run(
 
     # ------------------------------------------------------------------
     # 7. Reap inject subprocess + recovery period
+    #
+    #    The inject subprocess runs for the full --duration it was given.
+    #    If RCA triggered early (slo_violation path), the fault may still
+    #    be active here — communicate() will block until it exits naturally.
     # ------------------------------------------------------------------
     click.echo(f"[7/7] Collecting inject output + recovery ({RECOVERY_WAIT}s) …")
     try:
-        # Fault duration has already elapsed — subprocess should be done or nearly so
-        stdout, stderr = inject_proc.communicate(timeout=30)
+        stdout, stderr = inject_proc.communicate(timeout=duration + 60)
         if stdout:
             click.echo(stdout.strip())
         if inject_proc.returncode != 0 and stderr:
             click.echo(f"  inject stderr: {stderr.strip()}", err=True)
     except subprocess.TimeoutExpired:
-        click.echo("  inject script still running after fault window — killing", err=True)
+        click.echo("  inject script still running after extended wait — killing", err=True)
         inject_proc.kill()
         inject_proc.communicate()
     timeline["events"]["fault_stopped"] = _ts()
@@ -384,12 +423,17 @@ def run(
     click.echo(f"\n{'='*60}")
     click.echo(f"  Experiment complete  —  artifacts in {run_dir}")
     click.echo(f"  Total duration : {experiment_end - experiment_start:.0f}s")
+    click.echo(f"  RCA trigger    : {triggered_by}")
     diag = timeline["slo"].get("diagnosis_latency_seconds")
     click.echo(
         f"  SLO violation  : t+{diag}s after injection"
         if diag is not None else
         f"  SLO violation  : not detected (p95 stayed below {dynamic_threshold_ms:.0f}ms)"
     )
+    if slo_fired:
+        saved_time = round(duration - diag - SLO_OBSERVATION_BUFFER, 1) if diag else None
+        if saved_time and saved_time > 0:
+            click.echo(f"  Time saved     : ~{saved_time}s vs fixed-duration trigger")
     click.echo("  Files:")
     for f in sorted(run_dir.iterdir()):
         click.echo(f"    {f.name}")
