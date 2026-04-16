@@ -138,11 +138,11 @@ def pinpoint(
             if len(fault_data) < 3 or len(baseline_data) < 2:
                 continue
 
-            result = _analyze_metric(baseline_data, fault_data)
-            if result is None:
+            metric_analysis = _analyze_metric(baseline_data, fault_data)
+            if metric_analysis is None:
                 continue
 
-            onset_indices, directions, confidences = result
+            onset_indices, directions, confidences = metric_analysis
             abnormal_metric_names.append(metric_name)
             all_directions.extend(directions)
             if confidences:
@@ -190,7 +190,7 @@ def pinpoint(
         )
 
     sorted_services = sorted(service_onsets, key=_sort_key)
-    result: list[dict[str, Any]] = []
+    ranked_results: list[dict[str, Any]] = []
 
     for i, svc in enumerate(sorted_services, 1):
         entry = _make_entry(
@@ -201,9 +201,9 @@ def pinpoint(
             metric_confidences=service_metric_confidences.get(svc, {}),
         )
         entry["rank"] = i
-        result.append(entry)
+        ranked_results.append(entry)
 
-    return result
+    return ranked_results
 
 
 # ---------------------------------------------------------------------------
