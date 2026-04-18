@@ -42,6 +42,7 @@ from rca_engine.change_point import run_layer1
 from rca_engine.dependency import get_dependency_graph, has_path
 from rca_engine.normal_model import NormalModel
 from rca_engine.predictability_filter import filter_abnormal_change_points
+from rca_engine.smoothing import smooth_series
 from rca_engine.tangent_rollback import rollback_onset
 from rca_engine.aggregation import MONITORED_METRICS
 
@@ -138,7 +139,15 @@ def pinpoint(
             if len(fault_data) < 3 or len(baseline_data) < 2:
                 continue
 
-            metric_analysis = _analyze_metric(baseline_data, fault_data)
+            # Apply EMA smoothing to reduce noise before change-point detection
+            smoothed_baseline = smooth_series(baseline_data, method="ema", alpha=0.3)
+            smoothed_fault = smooth_series(fault_data, method="ema", alpha=0.3)
+            logger.debug(
+                "Applied EMA smoothing to %s.%s (baseline: %d samples, fault: %d samples)",
+                service, metric_name, len(smoothed_baseline), len(smoothed_fault)
+            )
+
+            metric_analysis = _analyze_metric(smoothed_baseline, smoothed_fault)
             if metric_analysis is None:
                 continue
 
