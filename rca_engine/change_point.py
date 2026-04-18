@@ -413,7 +413,7 @@ def run_layer1(
 
     Parameters
     ----------
-    time_series      : look-back window of raw metric values, length W=100
+    time_series      : look-back window of raw metric values.
     baseline_data    : longer window of known normal behavior, length ≥300
     k                : CUSUM reference value (default 0.5)
     n_bootstrap      : number of bootstrap replicates (default 1000)
