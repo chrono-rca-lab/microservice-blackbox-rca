@@ -34,6 +34,7 @@ Each entry contains ``service``, ``onset_time``, ``confidence``,
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -41,10 +42,17 @@ import numpy as np
 from rca_engine.change_point import run_layer1
 from rca_engine.dependency import get_dependency_graph, has_path
 from rca_engine.normal_model import NormalModel
+from rca_engine.markov_checkpoint import select_checkpoint
 from rca_engine.predictability_filter import filter_abnormal_change_points
 from rca_engine.smoothing import smooth_series
 from rca_engine.tangent_rollback import rollback_onset
 from rca_engine.aggregation import MONITORED_METRICS
+ 
+logger = logging.getLogger(__name__)
+ 
+_DEFAULT_CHECKPOINT_ROOT = Path("checkpoints/markov")
+_logged_model_selections: set[tuple[str, str]] = set()
+ 
 
 logger = logging.getLogger(__name__)
 
@@ -147,7 +155,13 @@ def pinpoint(
                 service, metric_name, len(smoothed_baseline), len(smoothed_fault)
             )
 
-            metric_analysis = _analyze_metric(smoothed_baseline, smoothed_fault)
+            metric_analysis = _analyze_metric(
+                baseline_data=smoothed_baseline,
+                fault_data=smoothed_fault,
+                service=service,
+                metric_name=metric_name,
+                step_seconds=step_seconds,
+            )
             if metric_analysis is None:
                 continue
 
@@ -353,21 +367,39 @@ def _analyze_metric(
     num_bins: int = 100,
     cusum_k_factor: float = 0.5,
     fft_Q: int = 20,
+    service: str = "",
+    metric_name: str = "",
+    step_seconds: float = 1.0,
+    checkpoint_root: Path = _DEFAULT_CHECKPOINT_ROOT,
+    force_window: int | None = None,
 ) -> tuple[list[int], list[str], list[float]] | None:
     """Run Layers 1-4 for a single metric of a single service.
  
     Parameters
     ----------
-    baseline_data : np.ndarray
-        Normal behavior window used to train the model and calibrate CUSUM.
-    fault_data : np.ndarray
+    baseline_data :
+        Normal behavior window. Used to calibrate CUSUM and, if no
+        checkpoint is found, to fit the Markov model on the fly.
+    fault_data :
         Fault window (look-back window) being analyzed.
-    num_bins : int
+    num_bins :
         Number of discretisation bins for the Markov model.
-    cusum_k_factor : float
-        CUSUM reference value k. Controls sensitivity to mean shifts.
-    fft_Q : int
+    cusum_k_factor :
+        CUSUM reference value k.
+    fft_Q :
         Half-window size in samples for the FFT burst threshold.
+    service, metric_name :
+        Used to locate the pretrained checkpoint on disk.
+    step_seconds :
+        Prometheus scrape step. Used to convert sample count to seconds
+        when selecting the appropriate checkpoint window.
+    checkpoint_root :
+        Root directory for checkpoint storage.
+    force_window :
+        If provided, always use this checkpoint window (seconds) regardless
+        of how much baseline data is available.  Raises FileNotFoundError
+        if the checkpoint does not exist.  Set to None to use automatic
+        selection or the active_window_seconds from checkpoint_config.json.
  
     Returns
     -------
@@ -391,22 +423,18 @@ def _analyze_metric(
     h = result.bootstrap_threshold
  
     # ------------------------------------------------------------------
-    # Layer 2: Markov model prediction errors
+    # Layer 2: Markov model — load checkpoint or fit from baseline
     # ------------------------------------------------------------------
-    # Bin edges are derived from the combined data range so that values
-    # observed during the fault period are covered and trigger the
-    # unseen-state path when they fall outside the baseline range.
-    all_data = np.concatenate([baseline_data, fault_data])
-    lo = float(np.min(all_data))
-    hi = float(np.max(all_data))
-    if hi == lo:
-        hi = lo + 1e-6
- 
-    model = NormalModel(
-        num_bins=num_bins,
-        metric_min=lo,
-        metric_max=hi,
-    ).fit(baseline_data)
+    model = _build_model(
+        baseline_data   = baseline_data,
+        fault_data      = fault_data,
+        num_bins        = num_bins,
+        service         = service,
+        metric_name     = metric_name,
+        step_seconds    = step_seconds,
+        checkpoint_root = checkpoint_root,
+        force_window    = force_window,
+    )
  
     # For each onset estimate from Layer 1, find the corresponding CUSUM
     # threshold crossing — the first index at or after the onset where
@@ -473,7 +501,78 @@ def _analyze_metric(
         return None
  
     return onset_indices, directions, confidences
-
+ 
+ 
+# ---------------------------------------------------------------------------
+# Model construction — checkpoint or fallback
+# ---------------------------------------------------------------------------
+ 
+def _build_model(
+    baseline_data: np.ndarray,
+    fault_data: np.ndarray,
+    num_bins: int,
+    service: str,
+    metric_name: str,
+    step_seconds: float,
+    checkpoint_root: Path,
+    force_window: int | None = None,
+) -> NormalModel:
+    """Return a ready-to-use NormalModel.
+ 
+    Tries to load a pretrained checkpoint first. Falls back to fitting
+    on the provided baseline data if no checkpoint is available.
+    """
+    if service and metric_name:
+        available_seconds = len(baseline_data) * step_seconds
+        checkpoint = select_checkpoint(
+            service           = service,
+            metric_name       = metric_name,
+            available_seconds = available_seconds,
+            root              = checkpoint_root,
+            force_window      = force_window,
+        )
+        if checkpoint is not None:
+            key = (service, metric_name)
+            if key not in _logged_model_selections:
+                print(
+                    "[rca:model] "
+                    f"{service}/{metric_name}: checkpoint "
+                    f"window={checkpoint.window_seconds}s (pretrained)"
+                )
+                _logged_model_selections.add(key)
+            logger.debug(
+                "Using pretrained checkpoint for %s/%s (window=%ds)",
+                service, metric_name, checkpoint.window_seconds,
+            )
+            return NormalModel.from_checkpoint(checkpoint)
+ 
+        logger.debug(
+            "No checkpoint found for %s/%s — fitting from baseline.",
+            service, metric_name,
+        )
+        key = (service, metric_name)
+        if key not in _logged_model_selections:
+            print(
+                "[rca:model] "
+                f"{service}/{metric_name}: fallback baseline fit "
+                f"(available={available_seconds:.0f}s)"
+            )
+            _logged_model_selections.add(key)
+ 
+    # Fallback: fit from the baseline data provided at call time.
+    # Bin range from combined data so fault excursions are covered.
+    all_data = np.concatenate([baseline_data, fault_data])
+    lo = float(np.min(all_data))
+    hi = float(np.max(all_data))
+    if hi == lo:
+        hi = lo + 1e-6
+ 
+    return NormalModel(
+        num_bins   = num_bins,
+        metric_min = lo,
+        metric_max = hi,
+    ).fit(baseline_data)
+ 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
