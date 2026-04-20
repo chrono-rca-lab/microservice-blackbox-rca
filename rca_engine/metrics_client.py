@@ -14,34 +14,51 @@ import requests
 
 
 # PromQL expressions keyed by a short metric name.
-# Rate metrics use a 5s window (spans ~5 scrapes at 1s interval).
+#
+# cAdvisor housekeeping interval on this kind cluster is 1s (set via
+# kubeletExtraArgs housekeeping-interval in infra/kind-cluster.yaml).
+# Counters update every ~1s, so Prometheus scrapes at 1s get fresh data each tick.
+# Rate/deriv windows use [30s]/[45s] to smooth over per-second noise and give
+# stable rate estimates for CUSUM — a wider window averages more samples, which
+# reduces variance without losing the fault signal.
 QUERIES: dict[str, str] = {
     "cpu_rate": (
-        'rate(container_cpu_usage_seconds_total{namespace="boutique",container!=""}[5s])'
+        'rate(container_cpu_usage_seconds_total{namespace="boutique",container!=""}[30s])'
     ),
     # Fraction of CFS scheduling periods where the pod was CPU-throttled.
     # Rises sharply when a cpu_hog fault hits a resource-limited container,
     # even when cpu_rate stays flat at its limit.
     # Note: cAdvisor emits this without a container label — it is pod-scoped.
     "cpu_throttle_ratio": (
-        'sum by (pod, namespace) (rate(container_cpu_cfs_throttled_periods_total{namespace="boutique"}[5s]))'
+        'sum by (pod, namespace) (rate(container_cpu_cfs_throttled_periods_total{namespace="boutique"}[30s]))'
         ' / '
-        'sum by (pod, namespace) (rate(container_cpu_cfs_periods_total{namespace="boutique"}[5s]))'
+        'sum by (pod, namespace) (rate(container_cpu_cfs_periods_total{namespace="boutique"}[30s]))'
     ),
+    # Rate of memory growth (bytes/sec) over a 45s window.
+    # Using deriv() instead of the raw gauge makes this metric stationary:
+    # normal fluctuation stays near zero while a mem_leak shows a sustained
+    # positive slope.  The raw gauge drifts upward over time under any load,
+    # causing CUSUM to fire false change points for every non-memory fault.
+    # Window is 45s (> 2× the ~20s housekeeping interval) to guarantee at
+    # least 2 samples for the linear regression deriv uses internally.
     "mem_wss": (
-        'container_memory_working_set_bytes{namespace="boutique",container!=""}'
+        'deriv(container_memory_working_set_bytes{namespace="boutique",container!=""}[45s])'
     ),
+    # interface="eth0" selects the pod's primary NIC only.  Without this
+    # filter, cAdvisor returns one series per virtual interface (lo, eth0,
+    # erspan0, gre0, tunl0, …) and the aggregation across all interfaces
+    # produces meaningless totals.
     "net_rx_rate": (
-        'rate(container_network_receive_bytes_total{namespace="boutique"}[5s])'
+        'rate(container_network_receive_bytes_total{namespace="boutique",interface="eth0"}[30s])'
     ),
     "net_tx_rate": (
-        'rate(container_network_transmit_bytes_total{namespace="boutique"}[5s])'
+        'rate(container_network_transmit_bytes_total{namespace="boutique",interface="eth0"}[30s])'
     ),
     "fs_read_rate": (
-        'rate(container_fs_reads_bytes_total{namespace="boutique",container!=""}[5s])'
+        'rate(container_fs_reads_bytes_total{namespace="boutique",container!=""}[30s])'
     ),
     "fs_write_rate": (
-        'rate(container_fs_writes_bytes_total{namespace="boutique",container!=""}[5s])'
+        'rate(container_fs_writes_bytes_total{namespace="boutique",container!=""}[30s])'
     ),
 }
 

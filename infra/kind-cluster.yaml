@@ -3,11 +3,26 @@ apiVersion: kind.x-k8s.io/v1alpha4
 name: fchain-rca
 nodes:
   - role: control-plane
+    # cAdvisor housekeeping interval — set to 1s for high-resolution data collection.
+    # This gives one real data point per second per container.
+    # Rate/deriv windows in metrics_client.py use [30s]/[45s] to smooth over noise.
+    kubeadmConfigPatches:
+      - |
+        kind: InitConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            housekeeping-interval: "1s"
 
   # kind does not support port ranges; list each NodePort individually.
   # Ports here cover the services we will expose (frontend, prometheus, grafana,
   # jaeger, and a few spares).  Add more entries as needed.
   - role: worker
+    kubeadmConfigPatches:
+      - |
+        kind: JoinConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            housekeeping-interval: "1s"
     extraPortMappings:
       - containerPort: 30000
         hostPort: 30000
@@ -35,11 +50,23 @@ nodes:
         containerPath: /tmp/kind-volumes
 
   - role: worker
+    kubeadmConfigPatches:
+      - |
+        kind: JoinConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            housekeeping-interval: "1s"
     extraMounts:
       - hostPath: /tmp/kind-volumes
         containerPath: /tmp/kind-volumes
 
   - role: worker
+    kubeadmConfigPatches:
+      - |
+        kind: JoinConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            housekeeping-interval: "1s"
     extraMounts:
       - hostPath: /tmp/kind-volumes
         containerPath: /tmp/kind-volumes
