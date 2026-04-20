@@ -80,10 +80,10 @@ In Grafana: **Dashboards → Kubernetes / Compute Resources / Pod**, set namespa
 ## 5. Run Load Generator
 
 ```bash
-python infra/loadgen.py --duration 300 --rps 5 --pattern sine
+python infra/loadgen.py --duration 300 --rps 5
 ```
 
-Options: `--pattern` accepts `sine`, `step`, or `constant`. Watch CPU lines move in Grafana.
+Traffic pattern is fixed to `sine`. Watch CPU lines move in Grafana.
 
 ---
 

@@ -1,0 +1,27 @@
+{
+    "_comment": "Checkpoint window configuration for the Markov chain model.",
+  
+    "active_window_seconds": 600,
+    "_active_window_comment": "Set to a window_seconds value to pin the model used for prediction.",
+    "_active_window_comment2": "Example: 3600 always uses the 1h checkpoint.",
+    "_active_window_comment3": "Set to null for automatic selection (largest window that fits available baseline).",
+  
+    "windows": [
+      { "window_seconds": 300,  "label": "5m"    },
+      { "window_seconds": 600,  "label": "10m"   },
+      { "window_seconds": 900,  "label": "15m"   },
+      { "window_seconds": 1800,  "label": "30m"   },
+      { "window_seconds": 3600,  "label": "1h"    },
+      { "window_seconds": 5400,  "label": "1h30m" },
+      { "window_seconds": 7200,  "label": "2h"    },
+      { "window_seconds": 9000,  "label": "2h30m" },
+      { "window_seconds": 10800, "label": "3h"    },
+      { "window_seconds": 12600, "label": "3h30m" },
+      { "window_seconds": 14400, "label": "4h"    }
+    ],
+  
+    "num_bins": 100,
+    "checkpoint_dir": "/Users/manav/Desktop/microservice-blackbox-rca/checkpoints/markov",
+    "prometheus_url": "http://localhost:9090",
+    "step_seconds": 1
+  }

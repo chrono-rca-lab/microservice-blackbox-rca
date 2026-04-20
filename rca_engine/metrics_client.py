@@ -6,7 +6,7 @@ pandas DataFrames or nested dicts ready for downstream analysis.
 
 import re
 import time
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -178,11 +178,16 @@ class PrometheusMetricsClient:
             return {}
 
         matrix: dict[str, dict[str, np.ndarray]] = {}
-        for (service, metric), group in df.groupby(["service", "metric"]):
+        for key, group in df.groupby(["service", "metric"]):
+            # Pandas typing exposes group keys as Hashable, so avoid direct tuple unpacking.
+            if not isinstance(key, tuple) or len(key) != 2:
+                continue
+            service, metric = str(key[0]), str(key[1])
             # Average over pods — keeps the time axis consistent
-            averaged = (
-                group.groupby("timestamp")["value"].mean().sort_index()
+            mean_by_timestamp = cast(
+                pd.Series, group.groupby("timestamp")["value"].mean()
             )
+            averaged = mean_by_timestamp.sort_index()
             matrix.setdefault(service, {})[metric] = averaged.to_numpy()
 
         return matrix
@@ -207,9 +212,9 @@ if __name__ == "__main__":
     else:
         print(f"\nRows: {len(df):,}  |  Services: {df['service'].nunique()}  |  Metrics: {df['metric'].nunique()}")
         print("\nPer-service, per-metric summary (mean value):")
+        summary_mean = cast(pd.Series, df.groupby(["service", "metric"])["value"].mean())
         print(
-            df.groupby(["service", "metric"])["value"]
-            .mean()
+            summary_mean
             .unstack(fill_value=0)
             .round(4)
             .to_string()

@@ -1,7 +1,7 @@
 """Online normal-behaviour model for per-service metrics (Markov chain prediction).
 
 Design follows the FChain / PRESS specification exactly:
-  - M = 40 fixed bins (PRESS paper default)
+  - M = 100 fixed bins (PRESS paper default)
   - Continuous online updates via update() during normal operation
   - Model is frozen during fault localisation (freeze() / unfreeze())
   - Unseen states return maximum possible prediction error
@@ -21,13 +21,17 @@ Typical lifecycle
 from __future__ import annotations
 
 import numpy as np
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from rca_engine.markov_checkpoint import MarkovCheckpoint
 
 
 # ---------------------------------------------------------------------------
 # Constants (from PRESS paper and FChain spec)
 # ---------------------------------------------------------------------------
 
-_DEFAULT_BINS: int = 40          # PRESS paper: M = 40 equal-width bins
+_DEFAULT_BINS: int = 40          # PRESS paper: M = 100 equal-width bins
 _UNIFORM_FILL: float = 1.0       # used to initialise unseen rows before normalisation
 
 
@@ -37,7 +41,7 @@ class NormalModel:
     Parameters
     ----------
     num_bins:
-        Number of equal-width discretisation bins.  PRESS paper uses 40.
+        Number of equal-width discretisation bins.  PRESS paper uses 100.
     metric_min:
         Lower bound of the expected metric range.  Used to compute bin edges
         and to derive the maximum possible prediction error for unseen states.
@@ -136,6 +140,38 @@ class NormalModel:
         self._last_bin = int(bins[-1])
         self._is_fit = True
         return self
+
+    @classmethod
+    def from_checkpoint(cls, checkpoint: "MarkovCheckpoint") -> "NormalModel":
+        """Instantiate a NormalModel from a pretrained MarkovCheckpoint.
+ 
+        The model is fully ready for prediction immediately — no call to
+        fit() is needed.  The counts, transition matrix, and bin edges are
+        copied directly from the checkpoint.
+ 
+        Parameters
+        ----------
+        checkpoint:
+            A MarkovCheckpoint loaded from disk via load_checkpoint().
+ 
+        Returns
+        -------
+        NormalModel
+            Ready to call prediction_errors_for() without any further setup.
+        """
+        instance = cls.__new__(cls)
+        instance._num_bins     = checkpoint.num_bins
+        instance._metric_min   = checkpoint.metric_min
+        instance._metric_max   = checkpoint.metric_max
+        instance._metric_range = checkpoint.metric_range
+        instance._bin_edges    = checkpoint.bin_edges.copy()
+        instance._counts       = checkpoint.counts.copy()
+        instance._transition   = checkpoint.transition.copy()
+        instance._frozen       = False
+        instance._last_bin     = None
+        instance._is_fit       = True
+        return instance
+ 
 
     def update(self, new_value: float) -> None:
         """Incorporate one new normal observation into the model (online mode).
