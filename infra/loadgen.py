@@ -1,7 +1,7 @@
 """Workload generator for the Online Boutique frontend.
 
-Simulates realistic user journeys (browse → view product → add to cart → checkout)
-at a configurable RPS with sine, step, or constant load patterns.
+Simulates realistic user journeys (browse -> view product -> add to cart -> checkout)
+at a configurable base RPS with a sine-wave traffic pattern.
 """
 
 import math
@@ -9,8 +9,6 @@ import queue
 import threading
 import time
 from collections import deque
-from typing import Literal
-
 import click
 import requests
 
@@ -40,9 +38,6 @@ _CHECKOUT_FORM = {
     "credit_card_expiration_year": "2030",
     "credit_card_cvv": "672",
 }
-
-PatternType = Literal["sine", "step", "constant"]
-
 
 class WorkloadGenerator:
     """Generates HTTP traffic against the Online Boutique frontend."""
@@ -117,13 +112,9 @@ class WorkloadGenerator:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _rps_at(t: float, base_rps: float, pattern: PatternType) -> float:
+    def _rps_at(t: float, base_rps: float) -> float:
         """Return the target RPS at elapsed time *t* (seconds)."""
-        if pattern == "sine":
-            return base_rps + base_rps * 0.5 * math.sin(2 * math.pi * t / 60)
-        if pattern == "step":
-            return base_rps * 2 if int(t / 30) % 2 == 1 else base_rps
-        return base_rps  # constant
+        return base_rps + base_rps * 0.5 * math.sin(2 * math.pi * t / 60)
 
     # ------------------------------------------------------------------
     # SLO monitoring
@@ -165,7 +156,7 @@ class WorkloadGenerator:
     # Main loop
     # ------------------------------------------------------------------
 
-    def _run_loop(self, duration_seconds: float, base_rps: float, pattern: PatternType) -> None:
+    def _run_loop(self, duration_seconds: float, base_rps: float) -> None:
         """Inner loop executed on the background thread."""
         start = time.time()
         next_slo_check = start + 10.0
@@ -181,7 +172,7 @@ class WorkloadGenerator:
             if now < next_req_time:
                 time.sleep(max(0.0, next_req_time - now))
 
-            rps = max(0.1, self._rps_at(elapsed, base_rps, pattern))
+            rps = max(0.1, self._rps_at(elapsed, base_rps))
             # Fire a journey on a short-lived thread so we don't block the pacing loop
             threading.Thread(target=self._user_journey, daemon=True).start()
 
@@ -197,7 +188,6 @@ class WorkloadGenerator:
         self,
         duration_seconds: float = 300,
         base_rps: float = 5,
-        pattern: PatternType = "sine",
         block: bool = False,
     ) -> threading.Thread:
         """Start the workload generator.
@@ -205,7 +195,7 @@ class WorkloadGenerator:
         Args:
             duration_seconds: How long to run before stopping automatically.
             base_rps:         Baseline requests per second.
-            pattern:          Load pattern — ``"sine"``, ``"step"``, or ``"constant"``.
+                           Effective RPS follows a sine wave around this baseline.
             block:            If True, block the caller until the run completes.
 
         Returns:
@@ -214,12 +204,12 @@ class WorkloadGenerator:
         self._stop_event.clear()
         self._thread = threading.Thread(
             target=self._run_loop,
-            args=(duration_seconds, base_rps, pattern),
+            args=(duration_seconds, base_rps),
             daemon=True,
             name="loadgen",
         )
         print(
-            f"[loadgen] Starting  pattern={pattern}  base_rps={base_rps}"
+            f"[loadgen] Starting  pattern=sine  base_rps={base_rps}"
             f"  duration={duration_seconds}s  target={self.frontend_url}"
         )
         self._thread.start()
@@ -242,17 +232,10 @@ class WorkloadGenerator:
 @click.option("--url", default="http://localhost:8080", show_default=True, help="Frontend URL.")
 @click.option("--duration", default=300, show_default=True, help="Run duration in seconds.")
 @click.option("--rps", default=5.0, show_default=True, help="Base requests per second.")
-@click.option(
-    "--pattern",
-    default="sine",
-    show_default=True,
-    type=click.Choice(["sine", "step", "constant"]),
-    help="Load pattern.",
-)
-def main(url: str, duration: int, rps: float, pattern: str) -> None:
+def main(url: str, duration: int, rps: float) -> None:
     """Generate HTTP load against the Online Boutique frontend."""
     gen = WorkloadGenerator(frontend_url=url)
-    gen.run(duration_seconds=duration, base_rps=rps, pattern=pattern, block=True)
+    gen.run(duration_seconds=duration, base_rps=rps, block=True)
     print("[loadgen] Done.")
 
 

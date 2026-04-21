@@ -51,6 +51,7 @@ sys.path.insert(0, str(ROOT))
 from infra.loadgen import WorkloadGenerator
 from rca_engine.metrics_client import PrometheusMetricsClient
 import fault_injection.ground_truth as gt
+from results import ResultsStore
 
 EXPERIMENTS_DIR    = ROOT / "experiments"
 CHAOS_INJECT_SCRIPT = ROOT / "fault_injection" / "chaos_inject.py"
@@ -216,6 +217,12 @@ def run(
         "windows":          {},
         "slo":              {},
     }
+    results = ResultsStore(
+        run_id=run_id,
+        fault=fault,
+        service=service,
+        duration_seconds=duration,
+    )
     client = PrometheusMetricsClient(prometheus_url=PROMETHEUS_URL)
 
     # ------------------------------------------------------------------
@@ -224,7 +231,7 @@ def run(
     click.echo("[1/7] Starting load generator …")
     gen = WorkloadGenerator(frontend_url=FRONTEND_URL, quiet=True)
     total_gen_duration = BASELINE_DURATION + duration + RECOVERY_WAIT + 60
-    gen.run(duration_seconds=total_gen_duration, base_rps=rps, pattern="constant")
+    gen.run(duration_seconds=total_gen_duration, base_rps=rps)
     experiment_start = _ts()
     timeline["events"]["experiment_start"] = experiment_start
 
@@ -254,6 +261,16 @@ def run(
     )
     timeline["baseline_p95_ms"]  = round(baseline_p95 * 1000, 1) if baseline_p95 else None
     timeline["slo_threshold_ms"] = dynamic_threshold_ms
+    results.add_step(
+        step="baseline",
+        summary="Baseline period completed",
+        details={
+            "baseline_p95_ms": round(baseline_p95 * 1000, 1) if baseline_p95 else None,
+            "slo_threshold_ms": dynamic_threshold_ms,
+            "baseline_duration_s": BASELINE_DURATION,
+        },
+        timestamp=baseline_end,
+    )
 
     # ------------------------------------------------------------------
     # 3. Inject fault + start SLO monitor in background
@@ -286,6 +303,17 @@ def run(
     injection_time = _ts()
     timeline["events"]["injection_start"] = injection_time
     timeline["injector"] = injector_label
+    results.add_step(
+        step="injection",
+        summary="Fault injection started",
+        details={
+            "injector": injector_label,
+            "fault": fault,
+            "service": service,
+            "duration_seconds": duration,
+        },
+        timestamp=injection_time,
+    )
     click.echo(f"  inject PID={inject_proc.pid}")
 
     slo_monitor = SLOMonitor(gen, threshold_ms=dynamic_threshold_ms)
@@ -348,12 +376,38 @@ def run(
                 f"  collected summary: {df['service'].nunique()} services, "
                 f"{df['metric'].nunique()} metrics"
             )
+            results.add_step(
+                step="metrics",
+                summary="Metrics collection completed",
+                details={
+                    "rows": len(df),
+                    "services": df["service"].nunique(),
+                    "metrics": df["metric"].nunique(),
+                },
+                timestamp=_ts(),
+            )
         else:
             click.echo("  WARNING: no metrics returned — metrics.parquet not saved")
             matrix = {}
+            results.add_step(
+                step="metrics",
+                summary="Metrics collection returned no data",
+                details={
+                    "services": 0,
+                    "metrics": 0,
+                    "rows": 0,
+                },
+                timestamp=_ts(),
+            )
     except Exception as exc:
         click.echo(f"  WARNING: metrics fetch failed: {exc}", err=True)
         matrix = {}
+        results.add_step(
+            step="metrics",
+            summary="Metrics collection failed",
+            details={"error": str(exc)},
+            timestamp=_ts(),
+        )
 
     # ------------------------------------------------------------------
     # 6. Run RCA
@@ -382,6 +436,16 @@ def run(
         )
     else:
         click.echo("  rca summary: no ranked services returned")
+    results.add_step(
+        step="rca",
+        summary="RCA completed",
+        details={
+            "ranked_services": len(ranked_services),
+            "top_service": top.get("service", "unknown") if ranked_services else None,
+            "top_confidence": top.get("confidence", 0.0) if ranked_services else None,
+        },
+        timestamp=rca_end,
+    )
 
     # ------------------------------------------------------------------
     # 7. Reap inject subprocess + recovery period
@@ -405,6 +469,24 @@ def run(
     experiment_end = _ts()
     timeline["events"]["recovery_end"]   = experiment_end
     timeline["events"]["experiment_end"] = experiment_end
+
+    results.add_step(
+        step="recovery",
+        summary="Recovery completed",
+        details={
+            "slo_violation_time": violation_time,
+            "diagnosis_latency_seconds": timeline["slo"]["diagnosis_latency_seconds"],
+            "recovery_wait_seconds": RECOVERY_WAIT,
+        },
+        timestamp=experiment_end,
+    )
+
+    results.set_summary({
+        "total_duration_seconds": experiment_end - experiment_start,
+        "top_rca_service": ranked_services[0].get("service") if ranked_services else None,
+        "top_rca_confidence": ranked_services[0].get("confidence") if ranked_services else None,
+    })
+    results.save(run_dir / "results.json")
 
     _save_json(run_dir / "timeline.json", timeline)
 
