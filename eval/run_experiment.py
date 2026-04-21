@@ -27,6 +27,7 @@ Usage:
 """
 
 import json
+import logging
 import subprocess
 import sys
 import threading
@@ -35,6 +36,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import click
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(message)s",
+)
 
 # ---------------------------------------------------------------------------
 # Project root on sys.path so sibling packages are importable
@@ -242,6 +248,10 @@ def run(
         if baseline_p95 else
         f"  baseline p95 unavailable, SLO threshold={dynamic_threshold_ms:.0f}ms"
     )
+    click.echo(
+        f"  baseline summary: p95={baseline_p95*1000:.0f}ms "
+        f"threshold={dynamic_threshold_ms:.0f}ms"
+    )
     timeline["baseline_p95_ms"]  = round(baseline_p95 * 1000, 1) if baseline_p95 else None
     timeline["slo_threshold_ms"] = dynamic_threshold_ms
 
@@ -334,6 +344,10 @@ def run(
             click.echo(
                 f"  saved metrics.parquet  ({len(df):,} rows, {df['service'].nunique()} services)"
             )
+            click.echo(
+                f"  collected summary: {df['service'].nunique()} services, "
+                f"{df['metric'].nunique()} metrics"
+            )
         else:
             click.echo("  WARNING: no metrics returned — metrics.parquet not saved")
             matrix = {}
@@ -358,6 +372,16 @@ def run(
     timeline["events"]["rca_end"]   = rca_end
     _save_json(run_dir / "rca_results.json", rca_results)
     click.echo(f"  rca done in {rca_end - rca_start:.1f}s")
+    ranked_services = rca_results.get("ranked_services") if isinstance(rca_results, dict) else []
+    if ranked_services:
+        top = ranked_services[0]
+        click.echo(
+            f"  rca summary: top={top.get('service', 'unknown')} "
+            f"confidence={top.get('confidence', 0.0):.3f} "
+            f"ranked={len(ranked_services)}"
+        )
+    else:
+        click.echo("  rca summary: no ranked services returned")
 
     # ------------------------------------------------------------------
     # 7. Reap inject subprocess + recovery period

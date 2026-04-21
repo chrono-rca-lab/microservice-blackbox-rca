@@ -8,9 +8,13 @@ import re
 import time
 from typing import Any, cast
 
+import logging
+
 import numpy as np
 import pandas as pd
 import requests
+
+logger = logging.getLogger(__name__)
 
 
 # PromQL expressions keyed by a short metric name.
@@ -130,11 +134,19 @@ class PrometheusMetricsClient:
         """
         rows: list[dict[str, Any]] = []
 
+        logger.info(
+            "Fetching Prometheus metrics from %s for window [%s, %s] step=%s",
+            self.prometheus_url,
+            start_time,
+            end_time,
+            step,
+        )
+
         for metric_name, query in QUERIES.items():
             try:
                 results = self._query_range(query, start_time, end_time, step)
             except (ConnectionError, RuntimeError) as exc:
-                print(f"[metrics_client] WARNING: skipping '{metric_name}': {exc}")
+                logger.warning("Skipping metric '%s': %s", metric_name, exc)
                 continue
 
             for series in results:
@@ -191,7 +203,16 @@ class PrometheusMetricsClient:
             averaged = mean_by_timestamp.sort_index()
             matrix.setdefault(service, {})[metric] = averaged.to_numpy()
 
+        self._log_matrix_summary(matrix)
         return matrix
+
+    def _log_matrix_summary(self, matrix: dict[str, dict[str, np.ndarray]]) -> None:
+        total_series = sum(len(metrics) for metrics in matrix.values())
+        logger.info(
+            "Built metric matrix with %d services and %d service-metric streams",
+            len(matrix),
+            total_series,
+        )
 
 
 # Demo
@@ -200,23 +221,23 @@ if __name__ == "__main__":
     START = END - 300  # last 5 minutes
 
     client = PrometheusMetricsClient()
-    print(f"Fetching metrics from {client.prometheus_url} …")
+    logger.info("Fetching metrics from %s …", client.prometheus_url)
 
     try:
         df = client.fetch_metrics(START, END)
     except ConnectionError as exc:
-        print(f"ERROR: {exc}")
+        logger.error("ERROR: %s", exc)
         raise SystemExit(1)
 
     if df.empty:
-        print("No data returned — is Prometheus running and scraping the cluster?")
+        logger.warning("No data returned — is Prometheus running and scraping the cluster?")
     else:
-        print(f"\nRows: {len(df):,}  |  Services: {df['service'].nunique()}  |  Metrics: {df['metric'].nunique()}")
-        print("\nPer-service, per-metric summary (mean value):")
-        summary_mean = cast(pd.Series, df.groupby(["service", "metric"])["value"].mean())
-        print(
-            summary_mean
-            .unstack(fill_value=0)
-            .round(4)
-            .to_string()
+        logger.info(
+            "Rows: %d  |  Services: %d  |  Metrics: %d",
+            len(df),
+            df['service'].nunique(),
+            df['metric'].nunique(),
         )
+        logger.info("Per-service, per-metric summary (mean value):")
+        summary_mean = cast(pd.Series, df.groupby(["service", "metric"])["value"].mean())
+        logger.info("\n%s", summary_mean.unstack(fill_value=0).round(4).to_string())

@@ -43,6 +43,9 @@ Public API
 from __future__ import annotations
 
 import numpy as np
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -190,7 +193,16 @@ def rollback_onset(
             # Slope changed — current_cp is the true onset
             break
 
+    _log_rollback_result(abnormal_cp, onset)
     return onset
+
+
+def _log_rollback_result(abnormal_cp: int, onset: int) -> None:
+    logger.debug(
+        "Layer 4 rollback: abnormal_cp=%d refined_onset=%d",
+        abnormal_cp,
+        onset,
+    )
 
 
 def compute_component_onset(

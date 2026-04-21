@@ -43,6 +43,9 @@ from __future__ import annotations
 import math
 
 import numpy as np
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -142,7 +145,16 @@ def filter_abnormal_change_points(
         if prediction_error > threshold:
             abnormal.append(t)
 
+    _log_filter_summary(len(change_point_errors), len(abnormal))
     return abnormal
+
+
+def _log_filter_summary(n_candidates: int, n_abnormal: int) -> None:
+    logger.debug(
+        "Layer 3 filter: %d abnormal change points from %d candidates",
+        n_abnormal,
+        n_candidates,
+    )
 
 
 # ---------------------------------------------------------------------------

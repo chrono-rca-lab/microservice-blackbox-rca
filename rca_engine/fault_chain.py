@@ -131,6 +131,12 @@ def pinpoint(
 
     bl_start, bl_end = baseline_window
     ft_start, ft_end = fault_window
+
+    logger.info(
+        "FChain RCA: starting pinpoint on %d services, "
+        "baseline_window=[%.0f, %.0f], fault_window=[%.0f, %.0f]",
+        len(metric_matrix), bl_start, bl_end, ft_start, ft_end,
+    )
     full_start = bl_start  # metric arrays are aligned to baseline start
 
     # Total services being monitored — used by the external cause check in
@@ -256,6 +262,14 @@ def pinpoint(
         )
         entry["rank"] = i
         ranked_results.append(entry)
+
+    if ranked_results:
+        logger.info(
+            "FChain RCA: finished ranking %d services, top=%s confidence=%.3f",
+            len(ranked_results),
+            ranked_results[0].get("service", ""),
+            ranked_results[0].get("confidence", 0.0),
+        )
 
     return ranked_results
 
@@ -606,10 +620,11 @@ def _build_model(
         if checkpoint is not None:
             key = (service, metric_name)
             if key not in _logged_model_selections:
-                print(
-                    "[rca:model] "
-                    f"{service}/{metric_name}: checkpoint "
-                    f"window={checkpoint.window_seconds}s (pretrained)"
+                logger.info(
+                    "[rca:model] %s/%s: checkpoint window=%ds (pretrained)",
+                    service,
+                    metric_name,
+                    checkpoint.window_seconds,
                 )
                 _logged_model_selections.add(key)
             logger.debug(
@@ -624,10 +639,11 @@ def _build_model(
         )
         key = (service, metric_name)
         if key not in _logged_model_selections:
-            print(
-                "[rca:model] "
-                f"{service}/{metric_name}: fallback baseline fit "
-                f"(available={available_seconds:.0f}s)"
+            logger.info(
+                "[rca:model] %s/%s: fallback baseline fit (available=%.0fs)",
+                service,
+                metric_name,
+                available_seconds,
             )
             _logged_model_selections.add(key)
  

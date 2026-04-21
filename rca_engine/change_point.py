@@ -13,6 +13,9 @@ Implements the full pipeline from the FChain spec:
 
 import numpy as np
 from dataclasses import dataclass, field
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -72,7 +75,7 @@ def compute_baseline_stats(
 
     if len(baseline_data) < 30:
         # Not enough data for reliable statistics — proceed with warning
-        print(
+        logger.warning(
             f"[WARN] Baseline length {len(baseline_data)} < 30. "
             "Statistics may be unreliable."
         )
@@ -501,7 +504,7 @@ def _sanitize_series(series: np.ndarray) -> np.ndarray:
 
     if not np.any(good):
         # Entire series is NaN — return zeros with warning
-        print("[WARN] Entire time series is NaN/Inf. Returning zeros.")
+        logger.warning("Entire time series is NaN/Inf. Returning zeros.")
         return np.zeros_like(series)
 
     # Linear interpolation over bad indices
