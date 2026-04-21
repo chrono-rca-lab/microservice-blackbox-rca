@@ -214,3 +214,7 @@ def _burst_threshold(
     threshold = float(np.percentile(np.abs(burst_signal), burst_percentile))
 
     return max(threshold, threshold_floor)
+
+
+# Alias used by tests written against an earlier internal name.
+_compute_burst_threshold = _burst_threshold

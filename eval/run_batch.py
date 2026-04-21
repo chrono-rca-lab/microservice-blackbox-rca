@@ -77,7 +77,7 @@ def run_batch(matrix: str, cooldown: int | None, dry_run: bool) -> None:
             failed.append(f"{fault}/{service}")
 
         if i < len(experiments):
-            click.echo(f"\nCooldown {cooldown_s}s before next run …\n")
+            click.echo(f"\n{cooldown_s}s before next run …\n")
             time.sleep(cooldown_s)
 
     # Summary

@@ -1,0 +1,145 @@
+{
+  "version": 1,
+  "created_utc": "2026-04-18T15:53:26.555693+00:00",
+  "step_seconds": 1.0,
+  "default_threshold_s": 2.0,
+  "calibration_fault": "cpu_hog",
+  "trials": 3,
+  "edges": {
+    "frontend->adservice": {
+      "observed_delays_s": [
+        0.0,
+        5.0,
+        7.0
+      ],
+      "median_delay_s": 5.0,
+      "threshold_s": 7.5
+    },
+    "frontend->cartservice": {
+      "observed_delays_s": [
+        0.0,
+        12.0,
+        0.0
+      ],
+      "median_delay_s": 0.0,
+      "threshold_s": 1.0
+    },
+    "checkoutservice->cartservice": {
+      "observed_delays_s": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "median_delay_s": 0.0,
+      "threshold_s": 1.0
+    },
+    "frontend->checkoutservice": {
+      "observed_delays_s": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "median_delay_s": 0.0,
+      "threshold_s": 1.0
+    },
+    "frontend->currencyservice": {
+      "observed_delays_s": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "median_delay_s": 0.0,
+      "threshold_s": 1.0
+    },
+    "checkoutservice->currencyservice": {
+      "observed_delays_s": [
+        0.0,
+        87.0,
+        0.0
+      ],
+      "median_delay_s": 0.0,
+      "threshold_s": 1.0
+    },
+    "checkoutservice->emailservice": {
+      "observed_delays_s": [
+        0.0,
+        0.0,
+        13.0
+      ],
+      "median_delay_s": 0.0,
+      "threshold_s": 1.0
+    },
+    "checkoutservice->paymentservice": {
+      "observed_delays_s": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "median_delay_s": 0.0,
+      "threshold_s": 1.0
+    },
+    "frontend->productcatalogservice": {
+      "observed_delays_s": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "median_delay_s": 0.0,
+      "threshold_s": 1.0
+    },
+    "checkoutservice->productcatalogservice": {
+      "observed_delays_s": [
+        0.0,
+        0.0,
+        106.0
+      ],
+      "median_delay_s": 0.0,
+      "threshold_s": 1.0
+    },
+    "recommendationservice->productcatalogservice": {
+      "observed_delays_s": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "median_delay_s": 0.0,
+      "threshold_s": 1.0
+    },
+    "frontend->recommendationservice": {
+      "observed_delays_s": [
+        15.0,
+        0.0,
+        0.0
+      ],
+      "median_delay_s": 0.0,
+      "threshold_s": 1.0
+    },
+    "cartservice->redis-cart": {
+      "observed_delays_s": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "median_delay_s": 0.0,
+      "threshold_s": 1.0
+    },
+    "frontend->shippingservice": {
+      "observed_delays_s": [
+        0.0,
+        65.0,
+        0.0
+      ],
+      "median_delay_s": 0.0,
+      "threshold_s": 1.0
+    },
+    "checkoutservice->shippingservice": {
+      "observed_delays_s": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "median_delay_s": 0.0,
+      "threshold_s": 1.0
+    }
+  }
+}

@@ -35,7 +35,10 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from calibration.propagation_map import PropagationMap
 
 import numpy as np
 
@@ -47,6 +50,10 @@ from rca_engine.predictability_filter import filter_abnormal_change_points
 from rca_engine.smoothing import smooth_series
 from rca_engine.tangent_rollback import rollback_onset
 from rca_engine.aggregation import MONITORED_METRICS
+
+# PropagationMap is imported lazily inside pinpoint() — only when a
+# propagation_map_path is supplied — to keep rca_engine free of a hard
+# dependency on the calibration/ package.
  
 logger = logging.getLogger(__name__)
  
@@ -60,6 +67,9 @@ logger = logging.getLogger(__name__)
 # Used as the denominator when computing fallback per-service confidence.
 TOTAL_METRICS: int = len(MONITORED_METRICS)
 
+# Default Prometheus scrape step used throughout the pipeline.
+STEP_SECONDS: float = 1.0
+
 
 # ---------------------------------------------------------------------------
 # Public entry point
@@ -70,6 +80,7 @@ def pinpoint(
     baseline_window: tuple[float, float],
     fault_window: tuple[float, float],
     step_seconds: float = 1.0,
+    propagation_map_path: str | None = None,
 ) -> list[dict[str, Any]]:
     """Run the full FChain RCA pipeline and return a ranked suspect list.
 
@@ -94,6 +105,12 @@ def pinpoint(
     step_seconds :
         Prometheus scrape step in seconds.  Must match the resolution at
         which *metric_matrix* was built.  Default 1.0.
+    propagation_map_path :
+        Optional path to a ``calibration/propagation_delays.json`` file
+        produced by ``calibration/calibrate.py``.  When supplied, Layer 7
+        uses per-edge calibrated thresholds instead of the global 2.0 s
+        constant.  If the file does not exist the parameter is silently
+        ignored and the global threshold is used.
 
     Returns
     -------
@@ -191,12 +208,26 @@ def pinpoint(
     # Layers 6-8: integrated fault diagnosis (FChain Section II-C)
     # ------------------------------------------------------------------
     dep_graph = get_dependency_graph()
+
+    # Load per-edge propagation map if a path was provided and the file exists.
+    prop_map = None
+    if propagation_map_path is not None:
+        from pathlib import Path as _Path
+        _map_file = _Path(propagation_map_path)
+        if _map_file.exists():
+            from calibration.propagation_map import PropagationMap
+            prop_map = PropagationMap.load(_map_file)
+            logger.info("Loaded propagation map from %s (%d edges)", _map_file, len(prop_map.edge_keys()))
+        else:
+            logger.warning("propagation_map_path %s not found — using global threshold", propagation_map_path)
+
     pinpointed = pinpoint_faults(
         service_onsets,
         service_trends,
         dep_graph,
         n_monitored_services=n_monitored_services,
         concurrency_threshold_s=2.0,
+        propagation_map=prop_map,
     )
 
     pinpointed_set = set(pinpointed)
@@ -239,6 +270,7 @@ def pinpoint_faults(
     dependency_graph: dict[str, list[str]],
     n_monitored_services: int = 0,
     concurrency_threshold_s: float = 2.0,
+    propagation_map: "PropagationMap | None" = None,
 ) -> list[str]:
     """Identify faulty services using the FChain Section II-C algorithm.
 
@@ -289,8 +321,21 @@ def pinpoint_faults(
         Total number of services under observation in this experiment run.
         Pass ``0`` to skip the external cause check.
     concurrency_threshold_s :
-        Maximum onset-time gap in seconds for two services to be
-        classified as concurrent independent faults.  FChain default: 2.0.
+        Fallback onset-time gap (seconds) used when no propagation map is
+        available or an edge has no calibration data.  FChain default: 2.0.
+    propagation_map :
+        Optional per-edge delay map from ``calibration/propagation_map.py``.
+        When provided, Layer 7 uses calibrated per-edge thresholds instead
+        of the global *concurrency_threshold_s*.
+
+        Semantics with a map:
+          onset_diff <= edge_threshold  → within the propagation window
+                                          → victim (not pinpointed here)
+          onset_diff >  edge_threshold  → outside window, too slow for
+                                          propagation → concurrent fault
+
+        When the map is None the original FChain behaviour is preserved
+        exactly (flat global threshold + early break).
 
     Returns
     -------
@@ -330,13 +375,40 @@ def pinpoint_faults(
 
     for svc in sorted_svcs[1:]:
         onset_diff = service_onsets[svc] - first_onset
-        if onset_diff <= concurrency_threshold_s:
-            # Started close enough that propagation cannot explain the gap.
-            pinpointed.append(svc)
+
+        if propagation_map is not None:
+            # Edge-aware path: check whether any already-pinpointed root cause
+            # can explain this service's anomaly via propagation.
+            #
+            #   onset_diff <= edge_threshold  → within propagation window
+            #                                   → skip (victim, handled by Layer 8)
+            #   onset_diff >  edge_threshold  → outside window, too slow
+            #                                   → must be concurrent fault
+            #   no dependency path            → cannot be propagation victim
+            #                                   → pinpoint as independent fault
+            #
+            # Unlike the no-map path there is NO early break: a service beyond
+            # the threshold might still be an independent fault with no
+            # dependency path to any pinpointed root.
+            is_propagation_victim = False
+            for root in pinpointed:
+                if has_path(dependency_graph, root, svc) or has_path(dependency_graph, svc, root):
+                    path_thr = propagation_map.get_path_threshold(root, svc, dependency_graph)
+                    if onset_diff <= path_thr:
+                        is_propagation_victim = True
+                        break
+                    # onset_diff > path_thr: outside window → concurrent
+            if not is_propagation_victim:
+                pinpointed.append(svc)
         else:
-            # This service started late enough to be a downstream victim.
-            # All subsequent services started even later, so stop scanning.
-            break
+            # Original FChain behaviour: flat global threshold + early break.
+            if onset_diff <= concurrency_threshold_s:
+                # Started close enough that propagation cannot explain the gap.
+                pinpointed.append(svc)
+            else:
+                # This service started late enough to be a downstream victim.
+                # All subsequent services started even later, so stop scanning.
+                break
 
     # Layer 8 — for every remaining abnormal service, determine whether
     # its abnormality is reachable from any already-pinpointed root cause

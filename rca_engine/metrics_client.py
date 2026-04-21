@@ -15,12 +15,13 @@ import requests
 
 # PromQL expressions keyed by a short metric name.
 #
-# cAdvisor housekeeping interval on this kind cluster is 1s (set via
+# cAdvisor housekeeping interval on this kind cluster is 10s (set via
 # kubeletExtraArgs housekeeping-interval in infra/kind-cluster.yaml).
-# Counters update every ~1s, so Prometheus scrapes at 1s get fresh data each tick.
-# Rate/deriv windows use [30s]/[45s] to smooth over per-second noise and give
-# stable rate estimates for CUSUM — a wider window averages more samples, which
-# reduces variance without losing the fault signal.
+# Counters update approximately once every 10 seconds regardless of how often
+# Prometheus scrapes.  Rate/deriv windows use [30s]/[45s] to guarantee each
+# evaluation window spans at least 2-3 real counter updates, giving stable
+# rate estimates with enough samples for CUSUM to distinguish sustained changes
+# from per-service noise.
 QUERIES: dict[str, str] = {
     "cpu_rate": (
         'rate(container_cpu_usage_seconds_total{namespace="boutique",container!=""}[30s])'

@@ -1,6 +1,6 @@
 """Tests for rca_engine.dependency."""
 
-from rca_engine.dependency import get_dependency_graph, has_path, ONLINE_BOUTIQUE_DEPENDENCIES
+from rca_engine.dependency import get_dependency_graph, has_path, find_path, ONLINE_BOUTIQUE_DEPENDENCIES
 
 
 def test_get_dependency_graph_returns_copy():
@@ -94,3 +94,65 @@ def test_has_path_with_custom_cyclic_graph():
     g = {"a": ["b"], "b": ["c"], "c": ["a"]}  # cycle
     assert has_path(g, "a", "c") is True
     assert has_path(g, "c", "b") is True  # c -> a -> b
+
+
+# ---------------------------------------------------------------------------
+# find_path tests
+# ---------------------------------------------------------------------------
+
+def test_find_path_self():
+    g = get_dependency_graph()
+    assert find_path(g, "frontend", "frontend") == ["frontend"]
+
+
+def test_find_path_direct_edge():
+    g = get_dependency_graph()
+    path = find_path(g, "frontend", "adservice")
+    assert path == ["frontend", "adservice"]
+
+
+def test_find_path_two_hops():
+    g = get_dependency_graph()
+    # frontend -> checkoutservice -> paymentservice
+    path = find_path(g, "frontend", "paymentservice")
+    assert path is not None
+    assert path[0] == "frontend"
+    assert path[-1] == "paymentservice"
+    assert len(path) == 3  # shortest is 2 hops
+
+
+def test_find_path_three_hops():
+    g = get_dependency_graph()
+    # frontend -> recommendationservice -> productcatalogservice
+    path = find_path(g, "frontend", "productcatalogservice")
+    assert path is not None
+    assert path[0] == "frontend"
+    assert path[-1] == "productcatalogservice"
+    # Could be 2 hops (frontend->productcatalogservice) — BFS returns shortest
+    assert len(path) >= 2
+
+
+def test_find_path_no_reverse():
+    g = get_dependency_graph()
+    assert find_path(g, "adservice", "frontend") is None
+    assert find_path(g, "paymentservice", "checkoutservice") is None
+
+
+def test_find_path_no_path_between_leaves():
+    g = get_dependency_graph()
+    assert find_path(g, "adservice", "paymentservice") is None
+
+
+def test_find_path_unknown_node():
+    g = get_dependency_graph()
+    assert find_path(g, "frontend", "nonexistent") is None
+    assert find_path(g, "nonexistent", "frontend") is None
+
+
+def test_find_path_returns_valid_edges():
+    """Every consecutive pair in the returned path must be a real edge."""
+    g = get_dependency_graph()
+    path = find_path(g, "frontend", "redis-cart")
+    assert path is not None
+    for i in range(len(path) - 1):
+        assert path[i + 1] in g[path[i]], f"Missing edge {path[i]}->{path[i+1]}"

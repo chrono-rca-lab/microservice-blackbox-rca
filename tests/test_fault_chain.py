@@ -307,7 +307,8 @@ class TestPinpointFaults:
         all_svcs = list(graph.keys())
         onsets = {s: 100.0 + i * 0.5 for i, s in enumerate(all_svcs)}
         trends = {s: "up" for s in all_svcs}
-        result = pinpoint_faults(onsets, trends, graph)
+        # n_monitored_services must be supplied so the external cause check fires
+        result = pinpoint_faults(onsets, trends, graph, n_monitored_services=len(all_svcs))
         assert result == []
 
     def test_empty_input(self):
@@ -426,7 +427,8 @@ class TestAnalyzeMetric:
         fault = np.concatenate([np.ones(5) * 5.0, np.ones(19) * 50.0])
         result = _analyze_metric(baseline, fault)
         assert result is not None
-        cusum_cps, onsets, dirs, confs = result
+        # _analyze_metric returns (onset_indices, directions, confidences)
+        onsets, dirs, confs = result
         assert len(onsets) >= 1
         assert all(isinstance(o, (int, np.integer)) for o in onsets)
 
@@ -443,7 +445,7 @@ class TestAnalyzeMetric:
         fault = np.concatenate([np.ones(5) * 100.0, np.ones(19) * 200.0])
         result = _analyze_metric(baseline, fault)
         assert result is not None
-        _, onsets, _, _ = result
+        onsets, _, _ = result
         assert len(onsets) >= 1
 
     def test_noisy_baseline_small_fault(self):
@@ -455,9 +457,5 @@ class TestAnalyzeMetric:
         fault = rng.normal(10.5, 2.0, 24)
         result = _analyze_metric(baseline, fault)
         if result is not None:
-            _, onsets, _, _ = result
-            assert len(onsets) <= 2
-        result = _analyze_metric(baseline, fault)
-        if result is not None:
-            _, onsets, _, _ = result
+            onsets, _, _ = result
             assert len(onsets) <= 2

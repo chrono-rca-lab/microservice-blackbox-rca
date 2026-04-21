@@ -140,6 +140,7 @@ def run_rca(
     baseline_window: tuple[float, float],
     fault_window: tuple[float, float],
     run_dir: Path,
+    propagation_map_path: str | None = None,
 ) -> dict:
     """Call the RCA engine and return a results dict."""
     try:
@@ -148,6 +149,7 @@ def run_rca(
             metric_matrix=metric_matrix,
             baseline_window=baseline_window,
             fault_window=fault_window,
+            propagation_map_path=propagation_map_path,
         )
         return {"ranked_services": ranked}
     except NotImplementedError:
@@ -190,6 +192,8 @@ def _iso(ts: float) -> str:
               help="Load generator base RPS.")
 @click.option("--concurrent", default=None,
               help="Comma-separated additional services to fault simultaneously.")
+@click.option("--propagation-map", default=None,
+              help="Path to calibration/propagation_delays.json for edge-aware RCA.")
 def run(
     fault: str,
     service: str,
@@ -197,6 +201,7 @@ def run(
     run_id: str | None,
     rps: float,
     concurrent: str | None,
+    propagation_map: str | None,
 ) -> None:
     """Run a fault injection experiment triggered by SLO violation."""
     if run_id is None:
@@ -242,10 +247,10 @@ def run(
     baseline_end = _ts()
     timeline["events"]["baseline_end"] = baseline_end
 
-    # Dynamic SLO threshold: 2× measured baseline p95, floored at P95_THRESHOLD_MS
+    # Dynamic SLO threshold: 1.5× measured baseline p95, floored at P95_THRESHOLD_MS
     baseline_p95 = gen.current_p95(window_seconds=BASELINE_DURATION)
     if baseline_p95 is not None:
-        dynamic_threshold_ms = max(baseline_p95 * 1000 * 2.0, float(P95_THRESHOLD_MS))
+        dynamic_threshold_ms = max(baseline_p95 * 1000 * 1.5, float(P95_THRESHOLD_MS))
     else:
         dynamic_threshold_ms = float(P95_THRESHOLD_MS)
     click.echo(
@@ -382,6 +387,7 @@ def run(
         baseline_window=(baseline_window_start, baseline_window_end),
         fault_window=(fault_window_start, fault_window_end),
         run_dir=run_dir,
+        propagation_map_path=propagation_map,
     )
     rca_end = _ts()
     timeline["events"]["rca_start"] = rca_start

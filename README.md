@@ -234,7 +234,91 @@ The `timeline.json` from `run_experiment_slo.py` includes an extra field:
 
 ---
 
-## 8. Run the Full Experiment Batch
+## 8. Propagation Delay Calibration
+
+The RCA engine defaults to a 2-second global threshold when deciding whether two services' fault onsets are "concurrent" or a propagation chain. On a kind cluster with sub-millisecond gRPC, detected onset gaps are typically 0–3 s and the global threshold misclassifies propagation victims.
+
+Calibration measures per-edge delays empirically and stores them so that Layer 7 of FChain uses edge-specific thresholds.
+
+### What it does
+
+For each downstream service (the callee), the script:
+1. Starts the load generator at normal RPS
+2. Waits a 60 s baseline
+3. Injects a `cpu_hog` fault into the callee
+4. Waits 120 s for full propagation to all callers
+5. Collects metrics and runs `fault_chain.pinpoint()` to measure per-service onset times
+6. Computes `delay_s = onset(caller) - onset(callee)` for every direct caller
+7. After N trials, stores the per-edge median delay and derives a threshold
+
+**10 unique callee targets × 3 trials ≈ 2 hours total.**
+
+### Quick single-target run (~4 min)
+
+```bash
+python calibration/calibrate.py --trials 1 --services checkoutservice
+```
+
+### Full calibration (~2 hours)
+
+```bash
+python calibration/calibrate.py --trials 3 --output calibration/propagation_delays.json
+```
+
+Options:
+- `--trials N` — number of injection trials per target service (default 3)
+- `--fault FAULT` — fault type for calibration experiments (default `cpu_hog`)
+- `--services svc1,svc2` — comma-separated subset of callee targets (default: all 10)
+- `--rps N` — load generator RPS during calibration (default 5.0)
+- `--output PATH` — where to write the JSON map (default `calibration/propagation_delays.json`)
+- `--dry-run` — print the experiment plan without running anything
+
+### Resulting JSON
+
+```json
+{
+  "version": 1,
+  "default_threshold_s": 2.0,
+  "edges": {
+    "frontend->checkoutservice": {
+      "observed_delays_s": [1.0, 2.0, 1.0],
+      "median_delay_s": 1.0,
+      "threshold_s": 1.5
+    },
+    "checkoutservice->paymentservice": {
+      "observed_delays_s": [0.0, 1.0, 0.0],
+      "median_delay_s": 0.0,
+      "threshold_s": 1.0
+    }
+  }
+}
+```
+
+Threshold formula: `threshold = median_delay + max(1.0, median_delay × 0.5)`. The `+1.0` floor accounts for 1-second Prometheus scrape resolution.
+
+### Using the map in experiments
+
+Pass `--propagation-map` to either experiment runner:
+
+```bash
+# SLO-triggered run with edge-aware Layer 7
+python eval/run_experiment_slo.py \
+    --fault net_delay --service paymentservice --duration 120 \
+    --propagation-map calibration/propagation_delays.json
+
+# Fixed-duration run with edge-aware Layer 7
+python eval/run_experiment.py \
+    --fault cpu_hog --service checkoutservice --duration 120 \
+    --propagation-map calibration/propagation_delays.json
+```
+
+When the map is loaded, `rca_results.json` will correctly classify propagation victims (e.g. frontend/checkoutservice affected by a paymentservice fault) instead of pinpointing them as concurrent independent faults.
+
+Without the flag the engine falls back to the original 2 s global threshold — fully backward compatible.
+
+---
+
+## 9. Run the Full Experiment Batch
 
 ```bash
 python eval/run_batch.py --matrix experiments/experiment_matrix.yaml
@@ -248,7 +332,7 @@ The batch runner exits non-zero if any experiment fails and prints a summary at 
 
 ---
 
-## 9. Fetch Metrics Directly
+## 10. Fetch Metrics Directly
 
 ```bash
 python -m rca_engine.metrics_client
