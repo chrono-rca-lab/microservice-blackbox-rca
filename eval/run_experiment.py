@@ -218,7 +218,7 @@ def run(
     click.echo("[1/7] Starting load generator …")
     gen = WorkloadGenerator(frontend_url=FRONTEND_URL, quiet=True)
     total_gen_duration = BASELINE_DURATION + duration + RECOVERY_WAIT + 60
-    gen.run(duration_seconds=total_gen_duration, base_rps=rps, pattern="constant")
+    gen.run(duration_seconds=total_gen_duration, base_rps=rps)
     experiment_start = _ts()
     timeline["events"]["experiment_start"] = experiment_start
 
