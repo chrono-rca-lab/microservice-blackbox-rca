@@ -164,6 +164,49 @@ def run_rca(
         output_file.write_text(json.dumps(result, indent=2))
         click.echo(f"  [rca] timing data saved to {output_file}")
         
+        # Also write a human-readable text summary for quick inspection
+        txt_lines: list[str] = []
+        txt_lines.append("RCA Timing Results")
+        txt_lines.append(f"Saved: {datetime.now(timezone.utc).isoformat()}")
+        txt_lines.append("")
+        txt_lines.append(f"Total RCA time: {total_time:.3f} seconds")
+        txt_lines.append("")
+        txt_lines.append("Stages:")
+        for entry in logs:
+            try:
+                ts = datetime.fromtimestamp(entry.get("timestamp", 0), timezone.utc).isoformat()
+            except Exception:
+                ts = str(entry.get("timestamp", ""))
+            txt_lines.append(
+                f"- {entry.get('stage',''):<20} | {entry.get('file',''):<20} | "
+                f"duration={entry.get('duration_seconds', 0):.3f}s | "
+                f"since_start={entry.get('since_start_seconds', 0):.3f}s | {ts}"
+            )
+
+        txt_lines.append("")
+        txt_lines.append("Ranked Services:")
+        if not ranked:
+            txt_lines.append("(none)")
+        else:
+            for svc in ranked:
+                onset = svc.get("onset_time")
+                onset_str = (
+                    datetime.fromtimestamp(onset, timezone.utc).isoformat()
+                    if isinstance(onset, (int, float))
+                    else str(onset)
+                )
+                txt_lines.append(
+                    f"{svc.get('rank', ''):>2}. {svc.get('service',''):<30} onset={onset_str} "
+                    f"conf={svc.get('confidence', 0.0):.3f} root={svc.get('is_root_cause', False)}"
+                )
+                am = svc.get('abnormal_metrics') or []
+                if am:
+                    txt_lines.append(f"    metrics: {', '.join(am)}")
+
+        output_txt = run_dir / "output.txt"
+        output_txt.write_text("\n".join(txt_lines))
+        click.echo(f"  [rca] text summary saved to {output_txt}")
+
         return {"ranked_services": ranked}
     except NotImplementedError:
         click.echo("  [rca] fault_chain.pinpoint not yet implemented — saving placeholder")
