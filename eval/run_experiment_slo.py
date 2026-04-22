@@ -172,45 +172,85 @@ def run_rca(
         output_file.write_text(json.dumps(result, indent=2))
         click.echo(f"  [rca] timing data saved to {output_file}")
         
-        # Also write a human-readable text summary for quick inspection
-        txt_lines: list[str] = []
-        txt_lines.append("RCA Timing Results")
+        from collections import defaultdict
+
+        txt_lines = []
+        txt_lines.append("RCA Service Timeline (Onset-based)")
         txt_lines.append(f"Saved: {datetime.now(timezone.utc).isoformat()}")
         txt_lines.append("")
         txt_lines.append(f"Total RCA time: {total_time:.3f} seconds")
         txt_lines.append("")
-        txt_lines.append("Stages:")
-        for entry in logs:
-            try:
-                ts = datetime.fromtimestamp(entry.get("timestamp", 0), timezone.utc).isoformat()
-            except Exception:
-                ts = str(entry.get("timestamp", ""))
-            txt_lines.append(
-                f"- {entry.get('stage',''):<20} | {entry.get('file',''):<20} | "
-                f"duration={entry.get('duration_seconds', 0):.3f}s | "
-                f"since_start={entry.get('since_start_seconds', 0):.3f}s | {ts}"
-            )
 
-        txt_lines.append("")
-        txt_lines.append("Ranked Services:")
-        if not ranked:
-            txt_lines.append("(none)")
-        else:
+        # ---------------------------------------------------
+        # Group logs per service using onset time proximity
+        # ---------------------------------------------------
+        service_logs = defaultdict(list)
+
+        for entry in logs:
+            entry_time = entry.get("timestamp", 0)
+
+            closest_service = None
+            min_diff = float("inf")
+
             for svc in ranked:
                 onset = svc.get("onset_time")
-                onset_str = (
-                    datetime.fromtimestamp(onset, timezone.utc).isoformat()
-                    if isinstance(onset, (int, float))
-                    else str(onset)
-                )
-                txt_lines.append(
-                    f"{svc.get('rank', ''):>2}. {svc.get('service',''):<30} onset={onset_str} "
-                    f"conf={svc.get('confidence', 0.0):.3f} root={svc.get('is_root_cause', False)}"
-                )
-                am = svc.get('abnormal_metrics') or []
-                if am:
-                    txt_lines.append(f"    metrics: {', '.join(am)}")
+                if not isinstance(onset, (int, float)):
+                    continue
 
+                diff = abs(entry_time - onset)
+                if diff < min_diff:
+                    min_diff = diff
+                    closest_service = svc.get("service")
+
+            if closest_service:
+                service_logs[closest_service].append(entry)
+
+        # ---------------------------------------------------
+        # Pretty per-service timeline output
+        # ---------------------------------------------------
+        txt_lines.append("Service-wise RCA Timeline:\n")
+
+        for svc in ranked:
+            name = svc.get("service")
+            onset = svc.get("onset_time")
+
+            onset_str = (
+                datetime.fromtimestamp(onset, timezone.utc).isoformat()
+                if isinstance(onset, (int, float))
+                else str(onset)
+            )
+
+            txt_lines.append(f"Service: {name}")
+            txt_lines.append(f"  onset: {onset_str}")
+            txt_lines.append(f"  confidence: {svc.get('confidence', 0.0):.3f}")
+            txt_lines.append(f"  root_cause: {svc.get('is_root_cause', False)}")
+
+            # abnormal metrics
+            am = svc.get("abnormal_metrics") or []
+            if am:
+                txt_lines.append(f"  metrics: {', '.join(am)}")
+
+            logs_for_service = sorted(
+                service_logs.get(name, []),
+                key=lambda x: x.get("timestamp", 0)
+            )
+
+            # normalize timestamps relative to onset
+            for entry in logs_for_service:
+                stage = entry.get("stage", "")
+                ts = entry.get("timestamp", 0)
+
+                if isinstance(onset, (int, float)):
+                    delta = ts - onset
+                    txt_lines.append(f"    {stage:<25} → +{delta:.3f}s")
+                else:
+                    txt_lines.append(f"    {stage:<25}")
+
+            txt_lines.append("")
+
+        # ---------------------------------------------------
+        # Save output
+        # ---------------------------------------------------
         output_txt = run_dir / "output.txt"
         output_txt.write_text("\n".join(txt_lines))
         click.echo(f"  [rca] text summary saved to {output_txt}")
