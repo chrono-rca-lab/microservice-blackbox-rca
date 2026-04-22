@@ -1,0 +1,97 @@
+{
+  "service": "paymentservice",
+  "metric_name": "cpu_throttle_ratio",
+  "windows": [
+    {
+      "window_seconds": 300,
+      "window_label": "5m",
+      "n_samples": 301,
+      "num_bins": 100,
+      "metric_min": -0.008461667733552516,
+      "metric_max": 0.0507700064013151,
+      "trained_at": "2026-04-21T13:47:25.602385+00:00",
+      "file": "window_300s.npz"
+    },
+    {
+      "window_seconds": 600,
+      "window_label": "10m",
+      "n_samples": 601,
+      "num_bins": 100,
+      "metric_min": -0.008461667733552516,
+      "metric_max": 0.0507700064013151,
+      "trained_at": "2026-04-21T13:52:25.004289+00:00",
+      "file": "window_600s.npz"
+    },
+    {
+      "window_seconds": 900,
+      "window_label": "15m",
+      "n_samples": 901,
+      "num_bins": 100,
+      "metric_min": -0.008461667733552516,
+      "metric_max": 0.0507700064013151,
+      "trained_at": "2026-04-21T13:57:25.500030+00:00",
+      "file": "window_900s.npz"
+    },
+    {
+      "window_seconds": 1800,
+      "window_label": "30m",
+      "n_samples": 1594,
+      "num_bins": 100,
+      "metric_min": -0.07162678872552984,
+      "metric_max": 0.4297607323531791,
+      "trained_at": "2026-04-21T14:12:27.423109+00:00",
+      "file": "window_1800s.npz"
+    },
+    {
+      "window_seconds": 3600,
+      "window_label": "1h",
+      "n_samples": 3393,
+      "num_bins": 100,
+      "metric_min": -0.07162678872552984,
+      "metric_max": 0.4297607323531791,
+      "trained_at": "2026-04-21T14:42:26.924109+00:00",
+      "file": "window_3600s.npz"
+    },
+    {
+      "window_seconds": 5400,
+      "window_label": "1h",
+      "n_samples": 5194,
+      "num_bins": 100,
+      "metric_min": -0.07162678872552984,
+      "metric_max": 0.4297607323531791,
+      "trained_at": "2026-04-21T15:12:32.003875+00:00",
+      "file": "window_5400s.npz"
+    },
+    {
+      "window_seconds": 7200,
+      "window_label": "2h",
+      "n_samples": 5880,
+      "num_bins": 100,
+      "metric_min": NaN,
+      "metric_max": NaN,
+      "trained_at": "2026-04-21T15:42:36.129005+00:00",
+      "file": "window_7200s.npz"
+    },
+    {
+      "window_seconds": 9000,
+      "window_label": "2h",
+      "n_samples": 7394,
+      "num_bins": 100,
+      "metric_min": NaN,
+      "metric_max": NaN,
+      "trained_at": "2026-04-21T16:12:36.075559+00:00",
+      "file": "window_9000s.npz"
+    },
+    {
+      "window_seconds": 10800,
+      "window_label": "3h",
+      "n_samples": 9195,
+      "num_bins": 100,
+      "metric_min": NaN,
+      "metric_max": NaN,
+      "trained_at": "2026-04-21T16:42:34.638222+00:00",
+      "file": "window_10800s.npz"
+    }
+  ],
+  "updated_at": "2026-04-21T16:42:34.662138+00:00"
+}

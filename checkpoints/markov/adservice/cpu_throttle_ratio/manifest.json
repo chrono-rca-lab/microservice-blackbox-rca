@@ -1,0 +1,97 @@
+{
+  "service": "adservice",
+  "metric_name": "cpu_throttle_ratio",
+  "windows": [
+    {
+      "window_seconds": 300,
+      "window_label": "5m",
+      "n_samples": 301,
+      "num_bins": 100,
+      "metric_min": -0.0026902727138108855,
+      "metric_max": 0.016141636282865312,
+      "trained_at": "2026-04-21T13:47:26.717993+00:00",
+      "file": "window_300s.npz"
+    },
+    {
+      "window_seconds": 600,
+      "window_label": "10m",
+      "n_samples": 601,
+      "num_bins": 100,
+      "metric_min": -0.0028035771484621616,
+      "metric_max": 0.016821462890772968,
+      "trained_at": "2026-04-21T13:52:27.544104+00:00",
+      "file": "window_600s.npz"
+    },
+    {
+      "window_seconds": 900,
+      "window_label": "15m",
+      "n_samples": 901,
+      "num_bins": 100,
+      "metric_min": -0.002993431086277775,
+      "metric_max": 0.01796058651766665,
+      "trained_at": "2026-04-21T13:57:28.951825+00:00",
+      "file": "window_900s.npz"
+    },
+    {
+      "window_seconds": 1800,
+      "window_label": "30m",
+      "n_samples": 1593,
+      "num_bins": 100,
+      "metric_min": -0.1,
+      "metric_max": 0.6,
+      "trained_at": "2026-04-21T14:12:29.702240+00:00",
+      "file": "window_1800s.npz"
+    },
+    {
+      "window_seconds": 3600,
+      "window_label": "1h",
+      "n_samples": 3392,
+      "num_bins": 100,
+      "metric_min": -0.1,
+      "metric_max": 0.6,
+      "trained_at": "2026-04-21T14:42:30.207860+00:00",
+      "file": "window_3600s.npz"
+    },
+    {
+      "window_seconds": 5400,
+      "window_label": "1h",
+      "n_samples": 5193,
+      "num_bins": 100,
+      "metric_min": -0.1,
+      "metric_max": 0.6,
+      "trained_at": "2026-04-21T15:12:38.410356+00:00",
+      "file": "window_5400s.npz"
+    },
+    {
+      "window_seconds": 7200,
+      "window_label": "2h",
+      "n_samples": 5876,
+      "num_bins": 100,
+      "metric_min": -0.1,
+      "metric_max": 0.6,
+      "trained_at": "2026-04-21T15:42:46.101684+00:00",
+      "file": "window_7200s.npz"
+    },
+    {
+      "window_seconds": 9000,
+      "window_label": "2h",
+      "n_samples": 7390,
+      "num_bins": 100,
+      "metric_min": -0.11699973168768447,
+      "metric_max": 0.7019983901261069,
+      "trained_at": "2026-04-21T16:12:54.343528+00:00",
+      "file": "window_9000s.npz"
+    },
+    {
+      "window_seconds": 10800,
+      "window_label": "3h",
+      "n_samples": 9191,
+      "num_bins": 100,
+      "metric_min": -0.11699973168768447,
+      "metric_max": 0.7019983901261069,
+      "trained_at": "2026-04-21T16:42:49.426550+00:00",
+      "file": "window_10800s.npz"
+    }
+  ],
+  "updated_at": "2026-04-21T16:42:49.448061+00:00"
+}

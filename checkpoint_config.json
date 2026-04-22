@@ -1,7 +1,7 @@
 {
     "_comment": "Checkpoint window configuration for the Markov chain model.",
   
-    "active_window_seconds": 600,
+    "active_window_seconds": 7200,
     "_active_window_comment": "Set to a window_seconds value to pin the model used for prediction.",
     "_active_window_comment2": "Example: 3600 always uses the 1h checkpoint.",
     "_active_window_comment3": "Set to null for automatic selection (largest window that fits available baseline).",
