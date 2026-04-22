@@ -1,0 +1,97 @@
+{
+  "service": "cartservice",
+  "metric_name": "cpu_throttle_ratio",
+  "windows": [
+    {
+      "window_seconds": 300,
+      "window_label": "5m",
+      "n_samples": 301,
+      "num_bins": 100,
+      "metric_min": -0.0031249971460972693,
+      "metric_max": 0.018749982876583617,
+      "trained_at": "2026-04-21T13:47:23.950750+00:00",
+      "file": "window_300s.npz"
+    },
+    {
+      "window_seconds": 600,
+      "window_label": "10m",
+      "n_samples": 601,
+      "num_bins": 100,
+      "metric_min": -0.0031249971460972693,
+      "metric_max": 0.018749982876583617,
+      "trained_at": "2026-04-21T13:52:24.257093+00:00",
+      "file": "window_600s.npz"
+    },
+    {
+      "window_seconds": 900,
+      "window_label": "15m",
+      "n_samples": 901,
+      "num_bins": 100,
+      "metric_min": -0.0031249971460972693,
+      "metric_max": 0.018749982876583617,
+      "trained_at": "2026-04-21T13:57:24.471611+00:00",
+      "file": "window_900s.npz"
+    },
+    {
+      "window_seconds": 1800,
+      "window_label": "30m",
+      "n_samples": 1594,
+      "num_bins": 100,
+      "metric_min": -0.1368421052631579,
+      "metric_max": 0.8210526315789474,
+      "trained_at": "2026-04-21T14:12:24.659933+00:00",
+      "file": "window_1800s.npz"
+    },
+    {
+      "window_seconds": 3600,
+      "window_label": "1h",
+      "n_samples": 3393,
+      "num_bins": 100,
+      "metric_min": -0.1368421052631579,
+      "metric_max": 0.8210526315789474,
+      "trained_at": "2026-04-21T14:42:24.204404+00:00",
+      "file": "window_3600s.npz"
+    },
+    {
+      "window_seconds": 5400,
+      "window_label": "1h",
+      "n_samples": 5194,
+      "num_bins": 100,
+      "metric_min": -0.1368421052631579,
+      "metric_max": 0.8210526315789474,
+      "trained_at": "2026-04-21T15:12:25.972394+00:00",
+      "file": "window_5400s.npz"
+    },
+    {
+      "window_seconds": 7200,
+      "window_label": "2h",
+      "n_samples": 5880,
+      "num_bins": 100,
+      "metric_min": -0.1368421052631579,
+      "metric_max": 0.8210526315789474,
+      "trained_at": "2026-04-21T15:42:28.925912+00:00",
+      "file": "window_7200s.npz"
+    },
+    {
+      "window_seconds": 9000,
+      "window_label": "2h",
+      "n_samples": 7393,
+      "num_bins": 100,
+      "metric_min": -0.1368421052631579,
+      "metric_max": 0.8210526315789474,
+      "trained_at": "2026-04-21T16:12:26.455673+00:00",
+      "file": "window_9000s.npz"
+    },
+    {
+      "window_seconds": 10800,
+      "window_label": "3h",
+      "n_samples": 9194,
+      "num_bins": 100,
+      "metric_min": -0.1368421052631579,
+      "metric_max": 0.8210526315789474,
+      "trained_at": "2026-04-21T16:42:27.957081+00:00",
+      "file": "window_10800s.npz"
+    }
+  ],
+  "updated_at": "2026-04-21T16:42:27.977143+00:00"
+}

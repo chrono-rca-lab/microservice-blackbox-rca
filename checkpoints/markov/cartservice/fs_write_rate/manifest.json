@@ -1,0 +1,97 @@
+{
+  "service": "cartservice",
+  "metric_name": "fs_write_rate",
+  "windows": [
+    {
+      "window_seconds": 300,
+      "window_label": "5m",
+      "n_samples": 301,
+      "num_bins": 100,
+      "metric_min": -2e-07,
+      "metric_max": 2e-07,
+      "trained_at": "2026-04-21T13:47:24.040995+00:00",
+      "file": "window_300s.npz"
+    },
+    {
+      "window_seconds": 600,
+      "window_label": "10m",
+      "n_samples": 601,
+      "num_bins": 100,
+      "metric_min": -2e-07,
+      "metric_max": 2e-07,
+      "trained_at": "2026-04-21T13:52:24.440757+00:00",
+      "file": "window_600s.npz"
+    },
+    {
+      "window_seconds": 900,
+      "window_label": "15m",
+      "n_samples": 901,
+      "num_bins": 100,
+      "metric_min": -2e-07,
+      "metric_max": 2e-07,
+      "trained_at": "2026-04-21T13:57:24.655625+00:00",
+      "file": "window_900s.npz"
+    },
+    {
+      "window_seconds": 1800,
+      "window_label": "30m",
+      "n_samples": 1592,
+      "num_bins": 100,
+      "metric_min": -2e-07,
+      "metric_max": 2e-07,
+      "trained_at": "2026-04-21T14:12:25.159675+00:00",
+      "file": "window_1800s.npz"
+    },
+    {
+      "window_seconds": 3600,
+      "window_label": "1h",
+      "n_samples": 3391,
+      "num_bins": 100,
+      "metric_min": -2e-07,
+      "metric_max": 2e-07,
+      "trained_at": "2026-04-21T14:42:24.636166+00:00",
+      "file": "window_3600s.npz"
+    },
+    {
+      "window_seconds": 5400,
+      "window_label": "1h",
+      "n_samples": 5192,
+      "num_bins": 100,
+      "metric_min": -2e-07,
+      "metric_max": 2e-07,
+      "trained_at": "2026-04-21T15:12:27.261505+00:00",
+      "file": "window_5400s.npz"
+    },
+    {
+      "window_seconds": 7200,
+      "window_label": "2h",
+      "n_samples": 5873,
+      "num_bins": 100,
+      "metric_min": -2e-07,
+      "metric_max": 2e-07,
+      "trained_at": "2026-04-21T15:42:30.046011+00:00",
+      "file": "window_7200s.npz"
+    },
+    {
+      "window_seconds": 9000,
+      "window_label": "2h",
+      "n_samples": 7385,
+      "num_bins": 100,
+      "metric_min": -2e-07,
+      "metric_max": 2e-07,
+      "trained_at": "2026-04-21T16:12:28.264532+00:00",
+      "file": "window_9000s.npz"
+    },
+    {
+      "window_seconds": 10800,
+      "window_label": "3h",
+      "n_samples": 9186,
+      "num_bins": 100,
+      "metric_min": -2e-07,
+      "metric_max": 2e-07,
+      "trained_at": "2026-04-21T16:42:29.679712+00:00",
+      "file": "window_10800s.npz"
+    }
+  ],
+  "updated_at": "2026-04-21T16:42:29.707815+00:00"
+}

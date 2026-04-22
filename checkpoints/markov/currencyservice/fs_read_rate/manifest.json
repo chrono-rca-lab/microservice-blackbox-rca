@@ -1,0 +1,97 @@
+{
+  "service": "currencyservice",
+  "metric_name": "fs_read_rate",
+  "windows": [
+    {
+      "window_seconds": 300,
+      "window_label": "5m",
+      "n_samples": 301,
+      "num_bins": 100,
+      "metric_min": -2e-07,
+      "metric_max": 2e-07,
+      "trained_at": "2026-04-21T13:47:25.151299+00:00",
+      "file": "window_300s.npz"
+    },
+    {
+      "window_seconds": 600,
+      "window_label": "10m",
+      "n_samples": 601,
+      "num_bins": 100,
+      "metric_min": -715.4845518395867,
+      "metric_max": 4292.90731103752,
+      "trained_at": "2026-04-21T13:52:24.852430+00:00",
+      "file": "window_600s.npz"
+    },
+    {
+      "window_seconds": 900,
+      "window_label": "15m",
+      "n_samples": 901,
+      "num_bins": 100,
+      "metric_min": -715.4845518395867,
+      "metric_max": 4292.90731103752,
+      "trained_at": "2026-04-21T13:57:25.335456+00:00",
+      "file": "window_900s.npz"
+    },
+    {
+      "window_seconds": 1800,
+      "window_label": "30m",
+      "n_samples": 1591,
+      "num_bins": 100,
+      "metric_min": -22064.214889375155,
+      "metric_max": 132385.28933625092,
+      "trained_at": "2026-04-21T14:12:27.266543+00:00",
+      "file": "window_1800s.npz"
+    },
+    {
+      "window_seconds": 3600,
+      "window_label": "1h",
+      "n_samples": 3390,
+      "num_bins": 100,
+      "metric_min": -22064.214889375155,
+      "metric_max": 132385.28933625092,
+      "trained_at": "2026-04-21T14:42:26.646197+00:00",
+      "file": "window_3600s.npz"
+    },
+    {
+      "window_seconds": 5400,
+      "window_label": "1h",
+      "n_samples": 5191,
+      "num_bins": 100,
+      "metric_min": -22064.214889375155,
+      "metric_max": 132385.28933625092,
+      "trained_at": "2026-04-21T15:12:31.352113+00:00",
+      "file": "window_5400s.npz"
+    },
+    {
+      "window_seconds": 7200,
+      "window_label": "2h",
+      "n_samples": 5869,
+      "num_bins": 100,
+      "metric_min": -22064.214889375155,
+      "metric_max": 132385.28933625092,
+      "trained_at": "2026-04-21T15:42:34.253139+00:00",
+      "file": "window_7200s.npz"
+    },
+    {
+      "window_seconds": 9000,
+      "window_label": "2h",
+      "n_samples": 7382,
+      "num_bins": 100,
+      "metric_min": -22064.214889375155,
+      "metric_max": 132385.28933625092,
+      "trained_at": "2026-04-21T16:12:34.779845+00:00",
+      "file": "window_9000s.npz"
+    },
+    {
+      "window_seconds": 10800,
+      "window_label": "3h",
+      "n_samples": 9183,
+      "num_bins": 100,
+      "metric_min": -22064.214889375155,
+      "metric_max": 132385.28933625092,
+      "trained_at": "2026-04-21T16:42:33.572656+00:00",
+      "file": "window_10800s.npz"
+    }
+  ],
+  "updated_at": "2026-04-21T16:42:33.591862+00:00"
+}
