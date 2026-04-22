@@ -14,6 +14,8 @@ Implements the full pipeline from the FChain spec:
 import numpy as np
 from dataclasses import dataclass, field
 import logging
+import time
+from rca_engine.logger import log_stage
 
 logger = logging.getLogger(__name__)
 
@@ -407,6 +409,8 @@ def run_layer1(
     block_size: int = 10,
     confidence_level: float = 0.95,
     seed: int | None = None,
+    start_time: float | None = None,
+    logs: list[dict] | None = None,
 ) -> ChangePointResult:
     """
     Full Layer 1 pipeline for one metric on one VM.
@@ -428,6 +432,11 @@ def run_layer1(
     -------
     ChangePointResult with all outputs needed by downstream layers
     """
+    # Log timing for Layer 1
+    if start_time is not None and logs is not None:
+        stage_start = time.time()
+        log_stage("LAYER1_CUSUM", __file__, start_time, stage_start, logs)
+    
     time_series   = np.asarray(time_series,  dtype=float).ravel()
     baseline_data = np.asarray(baseline_data, dtype=float).ravel()
 

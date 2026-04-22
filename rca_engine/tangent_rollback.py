@@ -44,6 +44,8 @@ from __future__ import annotations
 
 import numpy as np
 import logging
+import time
+from rca_engine.logger import log_stage
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +120,8 @@ def rollback_onset(
     abnormal_cp: int,
     all_change_points: list[int],
     tangent_threshold: float = _DEFAULT_TANGENT_THRESHOLD,
+    start_time: float | None = None,
+    logs: list[dict] | None = None,
 ) -> int:
     """Walk backward from *abnormal_cp* to find the true anomaly onset.
 
@@ -154,6 +158,11 @@ def rollback_onset(
         *all_change_points* (or *abnormal_cp* itself if no rollback
         is possible).  Always <= *abnormal_cp*.
     """
+    # Log timing for Layer 4
+    if start_time is not None and logs is not None:
+        stage_start = time.time()
+        log_stage("LAYER4_ROLLBACK", __file__, start_time, stage_start, logs)
+    
     series = np.asarray(series, dtype=float).ravel()
 
     # Guard: if abnormal_cp is not in all_change_points, add it so

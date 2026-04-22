@@ -137,12 +137,33 @@ def run_rca(
     """Call the RCA engine and return a results dict."""
     try:
         from rca_engine import fault_chain
+        
+        # Initialize timing collection
+        start_time = time.time()
+        logs: list[dict] = []
+        
         ranked = fault_chain.pinpoint(
             metric_matrix=metric_matrix,
             baseline_window=baseline_window,
             fault_window=fault_window,
             propagation_map_path=propagation_map_path,
+            start_time=start_time,
+            logs=logs,
         )
+        
+        # Prepare output with timing information
+        total_time = time.time() - start_time
+        result = {
+            "ranked_services": ranked,
+            "total_time_seconds": total_time,
+            "timing_logs": logs,
+        }
+        
+        # Save timing JSON to file
+        output_file = run_dir / "rca_timing.json"
+        output_file.write_text(json.dumps(result, indent=2))
+        click.echo(f"  [rca] timing data saved to {output_file}")
+        
         return {"ranked_services": ranked}
     except NotImplementedError:
         click.echo("  [rca] fault_chain.pinpoint not yet implemented — saving placeholder")

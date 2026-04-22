@@ -44,6 +44,8 @@ import math
 
 import numpy as np
 import logging
+import time
+from rca_engine.logger import log_stage
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +63,8 @@ def filter_abnormal_change_points(
     high_freq_fraction: float = 0.90,
     burst_percentile: float = 90.0,
     threshold_floor: float = 1e-10,
+    start_time: float | None = None,
+    logs: list[dict] | None = None,
 ) -> list[int]:
     """Return the subset of change points whose prediction error exceeds the
     local burst-based threshold.
@@ -91,6 +95,11 @@ def filter_abnormal_change_points(
         Indices of change points classified as ABNORMAL, in the same order
         they appear in change_point_errors.  Passed to the rollback step.
     """
+    # Log timing for Layer 3
+    if start_time is not None and logs is not None:
+        stage_start = time.time()
+        log_stage("LAYER3_FFT_FILTER", __file__, start_time, stage_start, logs)
+    
     series = np.asarray(series, dtype=float).ravel()
     n_series = len(series)
 

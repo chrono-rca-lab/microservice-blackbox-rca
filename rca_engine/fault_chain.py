@@ -34,6 +34,7 @@ Each entry contains ``service``, ``onset_time``, ``confidence``,
 from __future__ import annotations
 
 import logging
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -44,6 +45,7 @@ import numpy as np
 
 from rca_engine.change_point import run_layer1
 from rca_engine.dependency import get_dependency_graph, has_path
+from rca_engine.logger import log_stage
 from rca_engine.normal_model import NormalModel
 from rca_engine.markov_checkpoint import select_checkpoint
 from rca_engine.predictability_filter import filter_abnormal_change_points
@@ -81,6 +83,8 @@ def pinpoint(
     fault_window: tuple[float, float],
     step_seconds: float = 1.0,
     propagation_map_path: str | None = None,
+    start_time: float | None = None,
+    logs: list[dict] | None = None,
 ) -> list[dict[str, Any]]:
     """Run the full FChain RCA pipeline and return a ranked suspect list.
 
@@ -111,6 +115,10 @@ def pinpoint(
         uses per-edge calibrated thresholds instead of the global 2.0 s
         constant.  If the file does not exist the parameter is silently
         ignored and the global threshold is used.
+    start_time :
+        POSIX timestamp when RCA pipeline started. If None, initialized to current time.
+    logs :
+        List to accumulate timing logs. If None, initialized to empty list.
 
     Returns
     -------
@@ -126,6 +134,16 @@ def pinpoint(
         ``is_root_cause``    True if Section II-C identifies this as a fault
         ``rank``             1-based position in the output list
     """
+    # Initialize timing if not provided
+    if start_time is None:
+        start_time = time.time()
+    if logs is None:
+        logs = []
+    
+    # Log the START_PINPOINT stage
+    stage_start = time.time()
+    log_stage("START_PINPOINT", __file__, start_time, stage_start, logs)
+
     if not metric_matrix:
         return []
 
@@ -184,6 +202,8 @@ def pinpoint(
                 service=service,
                 metric_name=metric_name,
                 step_seconds=step_seconds,
+                start_time=start_time,
+                logs=logs,
             )
             if metric_analysis is None:
                 continue
@@ -270,6 +290,10 @@ def pinpoint(
             ranked_results[0].get("service", ""),
             ranked_results[0].get("confidence", 0.0),
         )
+
+    # Log the FINAL_RANKING stage
+    stage_start = time.time()
+    log_stage("FINAL_RANKING", __file__, start_time, stage_start, logs)
 
     return ranked_results
 
@@ -458,6 +482,8 @@ def _analyze_metric(
     step_seconds: float = 1.0,
     checkpoint_root: Path = _DEFAULT_CHECKPOINT_ROOT,
     force_window: int | None = None,
+    start_time: float | None = None,
+    logs: list[dict] | None = None,
 ) -> tuple[list[int], list[str], list[float]] | None:
     """Run Layers 1-4 for a single metric of a single service.
  
@@ -501,6 +527,8 @@ def _analyze_metric(
         time_series=fault_data,
         baseline_data=baseline_data,
         k=cusum_k_factor,
+        start_time=start_time,
+        logs=logs,
     )
     if not result.change_points:
         return None
@@ -557,6 +585,7 @@ def _analyze_metric(
     # ------------------------------------------------------------------
     abnormal_cps: list[int] = filter_abnormal_change_points(
         fault_data, pred_errors_by_onset, Q=fft_Q,
+        start_time=start_time, logs=logs,
     )
     if not abnormal_cps:
         return None
@@ -578,6 +607,8 @@ def _analyze_metric(
             series=fault_data,
             abnormal_cp=cp,
             all_change_points=result.change_points,
+            start_time=start_time,
+            logs=logs,
         )
         onset_indices.append(refined_onset)
         directions.append(cp_to_direction.get(cp, "up"))
