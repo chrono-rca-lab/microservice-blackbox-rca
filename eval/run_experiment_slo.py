@@ -63,7 +63,7 @@ EXEC_INJECT_SCRIPT  = ROOT / "fault_injection" / "inject.py"
 # IOChaos needs FUSE which is unavailable on kind — fall back to shell script.
 EXEC_ONLY_FAULTS = {"disk_hog"}
 
-P95_THRESHOLD_MS      = 500   # floor for the dynamic SLO threshold
+SLO_MULTIPLIER        = 1.4   # SLO threshold = this × baseline p95
 BASELINE_DURATION     = 60    # seconds of steady-state before injection
 BASELINE_END_BUFFER   = 10    # seconds trimmed from the tail of the baseline window
 SLO_OBSERVATION_BUFFER = 30   # seconds to keep observing after SLO violation before running RCA
@@ -351,16 +351,14 @@ def run(
     baseline_end = _ts()
     timeline["events"]["baseline_end"] = baseline_end
 
-    # Dynamic SLO threshold: 1.5× measured baseline p95, floored at P95_THRESHOLD_MS
+    # Dynamic SLO threshold: SLO_MULTIPLIER × measured baseline p95
     baseline_p95 = gen.current_p95(window_seconds=BASELINE_DURATION)
-    if baseline_p95 is not None:
-        dynamic_threshold_ms = max(baseline_p95 * 1000 * 1.5, float(P95_THRESHOLD_MS))
-    else:
-        dynamic_threshold_ms = float(P95_THRESHOLD_MS)
+    if baseline_p95 is None:
+        raise RuntimeError("Baseline p95 unavailable — loadgen produced no data during baseline window")
+    dynamic_threshold_ms = baseline_p95 * 1000 * SLO_MULTIPLIER
     click.echo(
         f"  baseline p95={baseline_p95*1000:.0f}ms, SLO threshold={dynamic_threshold_ms:.0f}ms"
-        if baseline_p95 else
-        f"  baseline p95 unavailable, SLO threshold={dynamic_threshold_ms:.0f}ms"
+        f" ({SLO_MULTIPLIER}×)"
     )
     timeline["baseline_p95_ms"]  = round(baseline_p95 * 1000, 1) if baseline_p95 else None
     timeline["slo_threshold_ms"] = dynamic_threshold_ms
