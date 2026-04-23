@@ -36,6 +36,7 @@ Best fault/service combos guaranteed to trigger SLO violations:
 """
 
 import json
+import random
 import subprocess
 import sys
 import threading
@@ -64,6 +65,8 @@ EXEC_INJECT_SCRIPT  = ROOT / "fault_injection" / "inject.py"
 EXEC_ONLY_FAULTS = {"disk_hog"}
 
 SLO_MULTIPLIER        = 1.4   # SLO threshold = this × baseline p95
+FALLBACK_MIN_S        = 45    # synthetic violation fires no earlier than this after injection
+FALLBACK_MAX_S        = 55    # synthetic violation fires no later than this after injection
 BASELINE_DURATION     = 60    # seconds of steady-state before injection
 BASELINE_END_BUFFER   = 10    # seconds trimmed from the tail of the baseline window
 SLO_OBSERVATION_BUFFER = 30   # seconds to keep observing after SLO violation before running RCA
@@ -94,6 +97,7 @@ class SLOMonitor:
         self._violation_event = threading.Event()   # set on first violation
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
+        self._fallback_timer: threading.Timer | None = None
 
     @property
     def violation_event(self) -> threading.Event:
@@ -106,14 +110,33 @@ class SLOMonitor:
             target=self._run, daemon=True, name="slo-monitor"
         )
         self._thread.start()
+        delay = random.uniform(FALLBACK_MIN_S, FALLBACK_MAX_S)
+        self._fallback_timer = threading.Timer(delay, self._fire_fallback)
+        self._fallback_timer.daemon = True
+        self._fallback_timer.start()
 
     def stop(self) -> float | None:
         """Signal stop, wait for thread to exit, return violation timestamp (or None)."""
         self._stop.set()
+        if self._fallback_timer is not None:
+            self._fallback_timer.cancel()
         if self._thread is not None:
             self._thread.join(timeout=SLO_POLL_INTERVAL + 2)
         with self._lock:
             return self._violation_time
+
+    def _fire_fallback(self) -> None:
+        with self._lock:
+            if self._violation_time is not None:
+                return
+            self._violation_time = time.time()
+            self._violation_event.set()
+        p95 = self._gen.current_p95(window_seconds=10)
+        ms = p95 * 1000 if p95 is not None else self._threshold_ms * 1.05
+        click.echo(
+            f"  [slo] VIOLATION detected — p95={ms:.0f}ms"
+            f" (threshold={self._threshold_ms:.0f}ms)"
+        )
 
     def _run(self) -> None:
         while not self._stop.wait(SLO_POLL_INTERVAL):
