@@ -435,8 +435,8 @@ def run_layer1(
     # Log timing for Layer 1
     if start_time is not None and logs is not None:
         stage_start = time.time()
-        log_stage("LAYER1_CUSUM", __file__, start_time, stage_start, logs)
-    
+        log_stage("LAYER1_CUSUM", __file__, start_time, time.time(), logs)
+
     time_series   = np.asarray(time_series,  dtype=float).ravel()
     baseline_data = np.asarray(baseline_data, dtype=float).ravel()
 

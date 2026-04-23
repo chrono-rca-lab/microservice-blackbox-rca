@@ -4,35 +4,16 @@ import time
 from typing import Any
 
 
-def log_stage(
-    stage: str,
-    file_name: str,
-    start_time: float,
-    stage_start: float,
-    logs: list[dict[str, Any]],
-) -> None:
-    """Record a stage completion with timing information.
+def log_stage(stage, file, start_time, current_time, logs):
+    if any(entry["stage"] == stage for entry in logs):
+        return
 
-    Parameters
-    ----------
-    stage : str
-        Stage name (e.g., "LAYER1_CUSUM", "LAYER2_PREDICTION_ERROR")
-    file_name : str
-        Source file name (e.g., "change_point.py", "fault_chain.py")
-    start_time : float
-        POSIX timestamp of pipeline start (fault_chain.pinpoint entry)
-    stage_start : float
-        POSIX timestamp when this stage began
-    logs : list[dict]
-        Shared log list to append to (mutated in place)
-    """
-    now = time.time()
-    logs.append(
-        {
-            "stage": stage,
-            "file": file_name,
-            "timestamp": now,
-            "since_start_seconds": round(now - start_time, 3),
-            "duration_seconds": round(now - stage_start, 3),
-        }
-    )
+    duration = current_time - start_time
+
+    logs.append({
+        "stage": stage,
+        "timestamp": current_time,
+        "since_start_seconds": duration,
+    })
+
+    print(f"[RCA] {stage:<25} (+{duration:.3f}s)")

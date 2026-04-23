@@ -167,77 +167,81 @@ def _iso(ts: float) -> str:
 
 
 def _format_rca_output(logs: list, ranked: list) -> list[str]:
-    """Generate clean service-centric RCA output with deduplicated layers and onset-relative timing.
-    
-    Returns list of formatted text lines (without leading title/metadata).
-    """
-    # Layer name mapping
+    """Clean RCA output: service-wise, RCA-relative timing (starts at 0)."""
+
     LAYER_LABELS = {
+        "START_PINPOINT": "RCA Pipeline Start",
         "LAYER1_CUSUM": "Layer 1 (CUSUM Detection)",
         "LAYER3_FFT_FILTER": "Layer 3 (FFT Predictability Filter)",
         "LAYER4_ROLLBACK": "Layer 4 (Onset Rollback)",
         "FINAL_RANKING": "Final Ranking",
-        "START_PINPOINT": "RCA Pipeline Start",
     }
-    
-    # Collect layer events (not per-service, but global pipeline stages)
-    # Each layer appears once with its timestamp
+
+    # --------------------------------------------------
+    # Get FIRST occurrence of each layer
+    # --------------------------------------------------
     layer_events = {}
     for entry in logs:
-        stage = entry.get("stage", "")
+        stage = entry.get("stage")
         if stage in LAYER_LABELS:
             label = LAYER_LABELS[stage]
             ts = entry.get("timestamp", 0)
-            # Keep first occurrence of each layer
             if label not in layer_events:
                 layer_events[label] = ts
-    
+
+    # --------------------------------------------------
+    # RCA start time = earliest layer timestamp
+    # --------------------------------------------------
+    if not layer_events:
+        return ["No RCA logs found"]
+
+    rca_start = min(layer_events.values())
+
     txt_lines = []
-    txt_lines.append("Service-wise RCA Timeline:\n")
-    
+    txt_lines.insert(0, "RCA Service Timeline")
+
+    # --------------------------------------------------
+    # SERVICE OUTPUT
+    # --------------------------------------------------
     for svc in ranked:
         name = svc.get("service")
         onset = svc.get("onset_time")
-        confidence = svc.get("confidence", 0.0)
-        is_root = svc.get("is_root_cause", False)
         abnormal_metrics = svc.get("abnormal_metrics") or []
-        
-        # Format onset timestamp
+
+        # Format onset
         if isinstance(onset, (int, float)):
             onset_str = datetime.fromtimestamp(onset, timezone.utc).isoformat()
         else:
             onset_str = str(onset)
-        
-        # Service header
+
         txt_lines.append(f"Service: {name}")
         txt_lines.append(f"  Onset: {onset_str}")
-        txt_lines.append(f"  Confidence: {confidence:.3f}")
-        txt_lines.append(f"  Root Cause: {is_root}")
-        
-        # Abnormal metrics
-        if abnormal_metrics:
-            txt_lines.append(f"\n  Metrics:")
-            txt_lines.append(f"    {', '.join(abnormal_metrics)}")
-        
-        # RCA pipeline layers with global timing (relative to service onset)
-        if layer_events and isinstance(onset, (int, float)):
-            txt_lines.append(f"\n  RCA Pipeline Stages:")
-            for layer_label in [
-                "RCA Pipeline Start",
-                "Layer 1 (CUSUM Detection)",
-                "Layer 3 (FFT Predictability Filter)",
-                "Layer 4 (Onset Rollback)",
-                "Final Ranking",
-            ]:
-                if layer_label in layer_events:
-                    layer_ts = layer_events[layer_label]
-                    delta = layer_ts - onset
-                    txt_lines.append(f"    - {layer_label:<40} → +{delta:.3f}s")
-        
-        txt_lines.append("")  # Blank line between services
-    
-    return txt_lines
 
+        if abnormal_metrics:
+            txt_lines.append("\n  Metrics:")
+            txt_lines.append(f"    {', '.join(abnormal_metrics)}")
+
+        txt_lines.append("\n  RCA Pipeline:")
+
+        # --------------------------------------------------
+        # LAYER TIMING (relative to RCA start)
+        # --------------------------------------------------
+        ordered_layers = [
+            "RCA Pipeline Start",
+            "Layer 1 (CUSUM Detection)",
+            "Layer 3 (FFT Predictability Filter)",
+            "Layer 4 (Onset Rollback)",
+            "Final Ranking",
+        ]
+
+        for layer in ordered_layers:
+            if layer in layer_events:
+                delta = layer_events[layer] - rca_start
+                txt_lines.append(f"    - {layer:<40} → +{delta:.3f}s")
+
+        txt_lines.append("")
+
+    return txt_lines
 
 # ---------------------------------------------------------------------------
 # RCA
