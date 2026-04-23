@@ -132,6 +132,91 @@ class SLOMonitor:
 
 
 # ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _ts() -> float:
+    return time.time()
+
+
+def _iso(ts: float) -> str:
+    return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+
+
+def _format_rca_output(logs: list, ranked: list) -> list[str]:
+    """Generate clean service-centric RCA output with deduplicated layers and onset-relative timing.
+    
+    Returns list of formatted text lines (without leading title/metadata).
+    """
+    # Layer name mapping
+    LAYER_LABELS = {
+        "LAYER1_CUSUM": "Layer 1 (CUSUM Detection)",
+        "LAYER3_FFT_FILTER": "Layer 3 (FFT Predictability Filter)",
+        "LAYER4_ROLLBACK": "Layer 4 (Onset Rollback)",
+        "FINAL_RANKING": "Final Ranking",
+        "START_PINPOINT": "RCA Pipeline Start",
+    }
+    
+    # Collect layer events (not per-service, but global pipeline stages)
+    # Each layer appears once with its timestamp
+    layer_events = {}
+    for entry in logs:
+        stage = entry.get("stage", "")
+        if stage in LAYER_LABELS:
+            label = LAYER_LABELS[stage]
+            ts = entry.get("timestamp", 0)
+            # Keep first occurrence of each layer
+            if label not in layer_events:
+                layer_events[label] = ts
+    
+    txt_lines = []
+    txt_lines.append("Service-wise RCA Timeline:\n")
+    
+    for svc in ranked:
+        name = svc.get("service")
+        onset = svc.get("onset_time")
+        confidence = svc.get("confidence", 0.0)
+        is_root = svc.get("is_root_cause", False)
+        abnormal_metrics = svc.get("abnormal_metrics") or []
+        
+        # Format onset timestamp
+        if isinstance(onset, (int, float)):
+            onset_str = datetime.fromtimestamp(onset, timezone.utc).isoformat()
+        else:
+            onset_str = str(onset)
+        
+        # Service header
+        txt_lines.append(f"Service: {name}")
+        txt_lines.append(f"  Onset: {onset_str}")
+        txt_lines.append(f"  Confidence: {confidence:.3f}")
+        txt_lines.append(f"  Root Cause: {is_root}")
+        
+        # Abnormal metrics
+        if abnormal_metrics:
+            txt_lines.append(f"\n  Metrics:")
+            txt_lines.append(f"    {', '.join(abnormal_metrics)}")
+        
+        # RCA pipeline layers with global timing (relative to service onset)
+        if layer_events and isinstance(onset, (int, float)):
+            txt_lines.append(f"\n  RCA Pipeline Stages:")
+            for layer_label in [
+                "RCA Pipeline Start",
+                "Layer 1 (CUSUM Detection)",
+                "Layer 3 (FFT Predictability Filter)",
+                "Layer 4 (Onset Rollback)",
+                "Final Ranking",
+            ]:
+                if layer_label in layer_events:
+                    layer_ts = layer_events[layer_label]
+                    delta = layer_ts - onset
+                    txt_lines.append(f"    - {layer_label:<40} → +{delta:.3f}s")
+        
+        txt_lines.append("")  # Blank line between services
+    
+    return txt_lines
+
+
+# ---------------------------------------------------------------------------
 # RCA
 # ---------------------------------------------------------------------------
 
@@ -172,81 +257,12 @@ def run_rca(
         output_file.write_text(json.dumps(result, indent=2))
         click.echo(f"  [rca] timing data saved to {output_file}")
         
-        from collections import defaultdict
-
-        txt_lines = []
-        txt_lines.append("RCA Service Timeline (Onset-based)")
-        txt_lines.append(f"Saved: {datetime.now(timezone.utc).isoformat()}")
-        txt_lines.append("")
-        txt_lines.append(f"Total RCA time: {total_time:.3f} seconds")
-        txt_lines.append("")
-
-        # ---------------------------------------------------
-        # Group logs per service using onset time proximity
-        # ---------------------------------------------------
-        service_logs = defaultdict(list)
-
-        for entry in logs:
-            entry_time = entry.get("timestamp", 0)
-
-            closest_service = None
-            min_diff = float("inf")
-
-            for svc in ranked:
-                onset = svc.get("onset_time")
-                if not isinstance(onset, (int, float)):
-                    continue
-
-                diff = abs(entry_time - onset)
-                if diff < min_diff:
-                    min_diff = diff
-                    closest_service = svc.get("service")
-
-            if closest_service:
-                service_logs[closest_service].append(entry)
-
-        # ---------------------------------------------------
-        # Pretty per-service timeline output
-        # ---------------------------------------------------
-        txt_lines.append("Service-wise RCA Timeline:\n")
-
-        for svc in ranked:
-            name = svc.get("service")
-            onset = svc.get("onset_time")
-
-            onset_str = (
-                datetime.fromtimestamp(onset, timezone.utc).isoformat()
-                if isinstance(onset, (int, float))
-                else str(onset)
-            )
-
-            txt_lines.append(f"Service: {name}")
-            txt_lines.append(f"  onset: {onset_str}")
-            txt_lines.append(f"  confidence: {svc.get('confidence', 0.0):.3f}")
-            txt_lines.append(f"  root_cause: {svc.get('is_root_cause', False)}")
-
-            # abnormal metrics
-            am = svc.get("abnormal_metrics") or []
-            if am:
-                txt_lines.append(f"  metrics: {', '.join(am)}")
-
-            logs_for_service = sorted(
-                service_logs.get(name, []),
-                key=lambda x: x.get("timestamp", 0)
-            )
-
-            # normalize timestamps relative to onset
-            for entry in logs_for_service:
-                stage = entry.get("stage", "")
-                ts = entry.get("timestamp", 0)
-
-                if isinstance(onset, (int, float)):
-                    delta = ts - onset
-                    txt_lines.append(f"    {stage:<25} → +{delta:.3f}s")
-                else:
-                    txt_lines.append(f"    {stage:<25}")
-
-            txt_lines.append("")
+        # Generate clean service-centric timeline
+        txt_lines = _format_rca_output(logs, ranked)
+        txt_lines.insert(0, f"Total RCA time: {total_time:.3f} seconds")
+        txt_lines.insert(0, "")
+        txt_lines.insert(0, f"Saved: {datetime.now(timezone.utc).isoformat()}")
+        txt_lines.insert(0, "RCA Service Timeline (Onset-based)")
 
         # ---------------------------------------------------
         # Save output
