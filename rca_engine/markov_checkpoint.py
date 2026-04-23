@@ -334,7 +334,7 @@ def select_checkpoint(
     2. ``active_window_seconds`` in checkpoint_config.json — if set, load
        that window for every call.
     3. Automatic — largest window whose duration does not exceed
-       ``available_seconds``.  Falls back to smallest if none fit.
+       ``available_seconds``.
 
     You can pin the window two ways:
 
@@ -419,19 +419,24 @@ def select_checkpoint(
                 )
                 return load_checkpoint(path)
 
-    # Fall back to smallest available
-    for window in sorted(windows):
-        path = checkpoint_path(service, metric_name, window, root)
-        if path.exists():
-            logger.warning(
-                "Available baseline (%.0fs) shorter than smallest window "
-                "(%ds). Using smallest checkpoint for %s/%s.",
-                available_seconds, window, service, metric_name,
-            )
-            return load_checkpoint(path)
+    # Do not fall back to the smallest checkpoint when available baseline
+    # is too short for all configured windows. This keeps auto-selection
+    # strict; smallest-window usage requires explicit pinning via
+    # force_window or active_window_seconds in checkpoint_config.json.
+    smallest_window = min(windows) if windows else None
+    if smallest_window is not None and available_seconds < smallest_window:
+        logger.info(
+            "Available baseline (%.0fs) is shorter than the smallest "
+            "configured window (%ds) for %s/%s. Skipping checkpoint "
+            "auto-selection.",
+            available_seconds, smallest_window, service, metric_name,
+        )
 
     logger.debug(
-        "No checkpoints found for %s/%s under %s", service, metric_name, root
+        "No suitable checkpoint selected for %s/%s under %s",
+        service,
+        metric_name,
+        root,
     )
     return None
 

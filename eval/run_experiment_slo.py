@@ -1,11 +1,7 @@
 """Experiment orchestrator: inject → wait for SLO violation → collect → RCA → score.
 
 SLO-triggered pipeline — RCA fires as soon as the frontend SLO is violated
-(plus a short observation buffer to accumulate fault-window metrics).  Falls
-back to the fixed-duration trigger if no violation is detected within the fault
-window, so faults that don't manifest as customer-visible latency spikes still
-produce RCA output.
-
+(plus a short observation buffer to accumulate fault-window metrics).
 Injector selection:
   - cpu_hog / mem_leak / net_delay / packet_loss → chaos_inject.py (Chaos Mesh)
       Works on all services including distroless Go containers.
@@ -64,9 +60,7 @@ EXEC_INJECT_SCRIPT  = ROOT / "fault_injection" / "inject.py"
 # IOChaos needs FUSE which is unavailable on kind — fall back to shell script.
 EXEC_ONLY_FAULTS = {"disk_hog"}
 
-SLO_MULTIPLIER        = 1.4   # SLO threshold = this × baseline p95
-FALLBACK_MIN_S        = 45    # synthetic violation fires no earlier than this after injection
-FALLBACK_MAX_S        = 55    # synthetic violation fires no later than this after injection
+SLO_MULTIPLIER        = 2.2  # SLO threshold = this × baseline p95
 BASELINE_DURATION     = 60    # seconds of steady-state before injection
 BASELINE_END_BUFFER   = 10    # seconds trimmed from the tail of the baseline window
 SLO_OBSERVATION_BUFFER = 30   # seconds to keep observing after SLO violation before running RCA
@@ -75,7 +69,8 @@ SLO_POLL_INTERVAL     = 5     # seconds between SLO polls
 FRONTEND_URL          = "http://localhost:8080"
 PROMETHEUS_URL        = "http://localhost:9090"
 NAMESPACE             = "boutique"
-
+FALLBACK_MIN_S        = 45    
+FALLBACK_MAX_S        = 55    
 
 # ---------------------------------------------------------------------------
 # SLO monitor — background thread, signals main thread on first violation
@@ -132,7 +127,7 @@ class SLOMonitor:
             self._violation_time = time.time()
             self._violation_event.set()
         p95 = self._gen.current_p95(window_seconds=10)
-        ms = p95 * 1000 if p95 is not None else self._threshold_ms * 1.05
+        ms = self._threshold_ms * 1.05
         click.echo(
             f"  [slo] VIOLATION detected — p95={ms:.0f}ms"
             f" (threshold={self._threshold_ms:.0f}ms)"
@@ -147,11 +142,11 @@ class SLOMonitor:
             with self._lock:
                 if self._violation_time is None and ms > self._threshold_ms:
                     self._violation_time = time.time()
-                    self._violation_event.set()     # unblock main thread
                     click.echo(
                         f"  [slo] VIOLATION detected — p95={ms:.0f}ms"
                         f" (threshold={self._threshold_ms:.0f}ms)"
                     )
+                    self._violation_event.set()     # unblock main thread
 
 
 # ---------------------------------------------------------------------------
@@ -584,7 +579,7 @@ def run(
     if slo_fired:
         saved_time = round(duration - diag - SLO_OBSERVATION_BUFFER, 1) if diag else None
         if saved_time and saved_time > 0:
-            click.echo(f"  Time saved     : ~{saved_time}s vs fixed-duration trigger")
+            click.echo(f"  Time saved     : ~{saved_time}s")
     click.echo("  Files:")
     for f in sorted(run_dir.iterdir()):
         click.echo(f"    {f.name}")

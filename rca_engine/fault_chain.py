@@ -260,12 +260,24 @@ def pinpoint(
     # ------------------------------------------------------------------
     # Rank and format output
     # ------------------------------------------------------------------
-    # Root causes are ordered before propagation victims; within each
-    # group services are sorted by onset time (earliest first).
+    # Root causes are ordered before propagation victims. Within each group,
+    # services are sorted by onset time (earliest first), then by confidence
+    # (highest first) when onset times tie.
+    def _confidence_for(svc: str) -> float:
+        abnormal_metrics = service_abnormal_metrics.get(svc, [])
+        metric_confidences = service_metric_confidences.get(svc, {})
+        if metric_confidences and abnormal_metrics:
+            return (
+                sum(metric_confidences.get(m, 0.0) for m in abnormal_metrics)
+                / len(abnormal_metrics)
+            )
+        return len(abnormal_metrics) / TOTAL_METRICS
+
     def _sort_key(svc: str) -> tuple:
         return (
             0 if svc in pinpointed_set else 1,
             service_onsets[svc],
+            -_confidence_for(svc),
         )
 
     sorted_services = sorted(service_onsets, key=_sort_key)
@@ -648,6 +660,11 @@ def _build_model(
         )
         if checkpoint is not None:
             key = (service, metric_name)
+            # print(
+            #     "[RCA][model] "
+            #     f"{service}/{metric_name}: using pretrained checkpoint "
+            #     f"(window={checkpoint.window_seconds}s)"
+            # )
             if key not in _logged_model_selections:
                 logger.info(
                     "[rca:model] %s/%s: checkpoint window=%ds (pretrained)",
@@ -667,6 +684,11 @@ def _build_model(
             service, metric_name,
         )
         key = (service, metric_name)
+        # print(
+        #     "[RCA][model] "
+        #     f"{service}/{metric_name}: no checkpoint selected, "
+        #     f"training new model from baseline (available={available_seconds:.0f}s)"
+        # )
         if key not in _logged_model_selections:
             logger.info(
                 "[rca:model] %s/%s: fallback baseline fit (available=%.0fs)",
