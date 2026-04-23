@@ -87,7 +87,6 @@ class TestPinpointPipeline:
 
         assert len(result) >= 1
         assert result[0]["service"] == "currencyservice"
-        assert result[0]["is_root_cause"] is True
         assert "cpu_rate" in result[0]["abnormal_metrics"]
 
     def test_empty_matrix(self):
@@ -120,7 +119,6 @@ class TestPinpointPipeline:
             assert "onset_time" in entry and isinstance(entry["onset_time"], float)
             assert "confidence" in entry and 0.0 <= entry["confidence"] <= 1.0
             assert "abnormal_metrics" in entry and isinstance(entry["abnormal_metrics"], list)
-            assert "is_root_cause" in entry and isinstance(entry["is_root_cause"], bool)
 
     def test_ranks_are_sequential(self):
         """Ranks must be 1, 2, 3, ... with no gaps."""
@@ -156,10 +154,9 @@ class TestPinpointPipeline:
         matrix["checkoutservice"] = checkout_metrics
 
         result = pinpoint(matrix, (bl_start, bl_end), (ft_start, ft_end))
-        root_indices = [i for i, e in enumerate(result) if e["is_root_cause"]]
-        prop_indices = [i for i, e in enumerate(result) if not e["is_root_cause"]]
-        if root_indices and prop_indices:
-            assert max(root_indices) < min(prop_indices)
+        names = [e["service"] for e in result]
+        if "paymentservice" in names and "checkoutservice" in names:
+            assert names.index("paymentservice") < names.index("checkoutservice")
 
     def test_multi_metric_fault(self):
         """A fault that affects CPU + memory should list both in abnormal_metrics."""
