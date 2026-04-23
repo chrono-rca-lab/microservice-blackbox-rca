@@ -28,7 +28,7 @@ Typical usage from ``eval/run_experiment.py``::
 ``ranked`` is a list of dicts ordered by FChain Section II-C ranking:
 root causes first (earliest onset), then downstream propagation victims.
 Each entry contains ``service``, ``onset_time``, ``confidence``,
-``abnormal_metrics``, ``is_root_cause``, and ``rank``.
+``abnormal_metrics``, and ``rank``.
 """
 
 from __future__ import annotations
@@ -131,7 +131,6 @@ def pinpoint(
         ``onset_time``       POSIX timestamp of the earliest detected onset
         ``confidence``       fraction of monitored metrics that were abnormal
         ``abnormal_metrics`` sorted list of metrics that showed abnormality
-        ``is_root_cause``    True if Section II-C identifies this as a fault
         ``rank``             1-based position in the output list
     """
     # Initialize timing if not provided
@@ -277,7 +276,6 @@ def pinpoint(
             svc,
             service_onsets[svc],
             service_abnormal_metrics[svc],
-            is_root_cause=(svc in pinpointed_set),
             metric_confidences=service_metric_confidences.get(svc, {}),
         )
         entry["rank"] = i
@@ -754,7 +752,6 @@ def _make_entry(
     service: str,
     onset_time: float,
     abnormal_metrics: list[str],
-    is_root_cause: bool,
     metric_confidences: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     """Construct a ranked result dict for one service.
@@ -776,5 +773,4 @@ def _make_entry(
         "onset_time":       onset_time,
         "confidence":       round(confidence, 3),
         "abnormal_metrics": sorted(abnormal_metrics),
-        "is_root_cause":    is_root_cause,
     }

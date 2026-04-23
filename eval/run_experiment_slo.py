@@ -223,7 +223,6 @@ def run_rca(
             txt_lines.append(f"Service: {name}")
             txt_lines.append(f"  onset: {onset_str}")
             txt_lines.append(f"  confidence: {svc.get('confidence', 0.0):.3f}")
-            txt_lines.append(f"  root_cause: {svc.get('is_root_cause', False)}")
 
             # abnormal metrics
             am = svc.get("abnormal_metrics") or []

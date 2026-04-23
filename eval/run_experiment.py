@@ -62,7 +62,7 @@ EXEC_INJECT_SCRIPT  = ROOT / "fault_injection" / "inject.py"
 EXEC_ONLY_FAULTS = {"disk_hog"}
 
 P95_THRESHOLD_MS     = 500   # floor for the dynamic SLO threshold
-BASELINE_DURATION    = 310   # seconds of steady-state before injection
+BASELINE_DURATION    = 70   # seconds of steady-state before injection
 BASELINE_END_BUFFER  = 10    # seconds trimmed from the tail of the baseline window
                               # (avoids capturing the transition moment in the normal distribution)
 RECOVERY_WAIT        = 30    # seconds of post-fault observation before stopping loadgen
@@ -197,7 +197,7 @@ def run_rca(
                 )
                 txt_lines.append(
                     f"{svc.get('rank', ''):>2}. {svc.get('service',''):<30} onset={onset_str} "
-                    f"conf={svc.get('confidence', 0.0):.3f} root={svc.get('is_root_cause', False)}"
+                    f"conf={svc.get('confidence', 0.0):.3f}"
                 )
                 am = svc.get('abnormal_metrics') or []
                 if am:
