@@ -1,0 +1,30 @@
+# Overlay: pin all monitoring components to the dedicated monitoring node (Machine 3).
+# Apply on top of prometheus-values.yaml when using the 4-node VCL layout.
+#
+# Usage:
+#   bash infra/deploy-monitoring.sh --k3s --monitoring-node
+#
+# node-exporter is intentionally NOT pinned — it is a DaemonSet and must run on
+# every node to collect host-level CPU/memory/disk metrics for all machines.
+
+prometheus:
+  prometheusSpec:
+    nodeSelector:
+      role: monitoring
+
+alertmanager:
+  alertmanagerSpec:
+    nodeSelector:
+      role: monitoring
+
+grafana:
+  nodeSelector:
+    role: monitoring
+
+kube-state-metrics:
+  nodeSelector:
+    role: monitoring
+
+prometheusOperator:
+  nodeSelector:
+    role: monitoring

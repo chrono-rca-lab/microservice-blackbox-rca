@@ -1,17 +1,34 @@
 #!/usr/bin/env bash
-# Deploy Chaos Mesh to the fchain-rca kind cluster via Helm.
+# Deploy Chaos Mesh via Helm.
+#
+# Usage:
+#   bash infra/deploy-chaos-mesh.sh           # kind cluster (default)
+#   bash infra/deploy-chaos-mesh.sh --k3s     # k3s/VCL cluster
+#
+# kind uses /run/containerd/containerd.sock (verified via docker exec).
+# k3s uses /run/k3s/containerd/containerd.sock (no docker exec needed).
 set -euo pipefail
 
 CHAOS_MESH_VERSION="2.7.0"
 NAMESPACE="chaos-mesh"
+K3S=false
 
-echo "[chaos-mesh] Verifying containerd socket path on kind nodes …"
-# kind nodes use containerd; the socket is mounted from the host
-SOCKET_PATH="/run/containerd/containerd.sock"
-if docker exec fchain-rca-control-plane ls -la "${SOCKET_PATH}" >/dev/null 2>&1; then
-  echo "[chaos-mesh]   socket found at ${SOCKET_PATH}"
+for arg in "$@"; do
+  [[ "${arg}" == "--k3s" ]] && K3S=true
+done
+
+if [[ "${K3S}" == true ]]; then
+  SOCKET_PATH="/run/k3s/containerd/containerd.sock"
+  echo "[chaos-mesh] k3s mode — using socket ${SOCKET_PATH}"
 else
-  echo "[chaos-mesh] WARNING: socket not found at ${SOCKET_PATH} — adjust SOCKET_PATH if install fails"
+  echo "[chaos-mesh] Verifying containerd socket path on kind nodes …"
+  # kind nodes use containerd; the socket is mounted from the host
+  SOCKET_PATH="/run/containerd/containerd.sock"
+  if docker exec fchain-rca-control-plane ls -la "${SOCKET_PATH}" >/dev/null 2>&1; then
+    echo "[chaos-mesh]   socket found at ${SOCKET_PATH}"
+  else
+    echo "[chaos-mesh] WARNING: socket not found at ${SOCKET_PATH} — adjust SOCKET_PATH if install fails"
+  fi
 fi
 
 echo "[chaos-mesh] Adding Helm repo …"

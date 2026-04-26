@@ -295,6 +295,9 @@ def _save_json(path: Path, obj: dict) -> None:
               help="Comma-separated additional services to fault simultaneously.")
 @click.option("--propagation-map", default=None,
               help="Path to calibration/propagation_delays.json for edge-aware RCA.")
+@click.option("--isolate", is_flag=True, default=False,
+              help="Move the target service to the experiment-target node before injecting "
+                   "to eliminate hardware contention from neighbouring pods.")
 def run(
     fault: str,
     service: str,
@@ -303,10 +306,38 @@ def run(
     rps: float,
     concurrent: str | None,
     propagation_map: str | None,
+    isolate: bool,
 ) -> None:
     """Run a full end-to-end fault injection experiment."""
     if run_id is None:
         run_id = gt.make_run_id()
+
+    original_selector = None
+    if isolate:
+        from eval.isolate_service import move_to_experiment_node, restore_service
+        original_selector = move_to_experiment_node(service)
+
+    try:
+        _run_body(
+            fault=fault, service=service, duration=duration, run_id=run_id,
+            rps=rps, concurrent=concurrent, propagation_map=propagation_map,
+        )
+    finally:
+        if isolate and original_selector is not None:
+            from eval.isolate_service import restore_service
+            restore_service(service, original_selector)
+
+
+def _run_body(
+    fault: str,
+    service: str,
+    duration: int,
+    run_id: str,
+    rps: float,
+    concurrent: str | None,
+    propagation_map: str | None,
+) -> None:
+    """Inner experiment body — called by run() with optional isolation wrapper."""
 
     run_dir = EXPERIMENTS_DIR / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
