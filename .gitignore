@@ -10,6 +10,9 @@ build/
 .venv/
 venv/
 
+# Node
+node_modules/
+
 # Experiments — keep matrix YAML and .gitkeep; ignore run output
 experiments/20*/
 !experiments/.gitkeep
