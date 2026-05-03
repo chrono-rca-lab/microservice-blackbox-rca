@@ -1,7 +1,7 @@
 """
 Layer 1: CUSUM + Bootstrap change-point detection.
 
-Implements the full pipeline from the FChain spec:
+Pipeline shape (Layer 1):
   Step 1 — baseline statistics
   Step 2 — standardization
   Step 3 — two-sided CUSUM

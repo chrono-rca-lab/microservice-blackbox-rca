@@ -1,28 +1,20 @@
-"""Multi-metric onset aggregation — Layer 5 of the FChain pipeline.
+"""Layer 5 — squash per-metric onsets down to one per service/pod.
 
-This is the final per-component step.  It collapses the per-metric
-onset times produced by Layer 4 (tangent-based rollback) into a single
-component-level onset timestamp.
+Roll-back (layer 4) gives you an onset per metric when something looks wrong.
+Here we take the earliest of those; if none fire, there's nothing for the
+later cross-service ranking to chew on.
 
-Algorithm
----------
-  component_onset = min(t for t in onset_times.values() if t is not None)
+We track seven infra-style metrics everywhere else in this repo:
 
-If no metric on the component shows any abnormal behavior the result is
-None, and the FChain master excludes this component from the propagation
-chain.
-
-FChain monitors exactly 7 system-level metrics per VM:
 "cpu_rate", "cpu_throttle_ratio", "mem_wss",
-    "net_rx_rate", "net_tx_rate", "fs_read_rate", "fs_write_rate"
+"net_rx_rate", "net_tx_rate", "fs_read_rate", "fs_write_rate"
 
-Not all 6 need to be present.  Aggregation works on whatever subset is
-available.
+You don't need all seven in the dict; min over whatever showed up works.
 
-Public API
-----------
-  aggregate_component_onset(onset_per_metric)  -> int | None
-  aggregate_all_components(onsets_per_component) -> dict[str, int | None]
+Exports
+-------
+  aggregate_component_onset(...)
+  aggregate_all_components(...)
 """
 
 from __future__ import annotations
@@ -31,7 +23,7 @@ from __future__ import annotations
 # Constants — single source of truth for metric names used across the pipeline
 # ---------------------------------------------------------------------------
 
-#: The 7 system-level metrics FChain monitors per VM (FChain paper Section III-A).
+# Canonical metric names for this stack (seven tracked in Boutique runs).
 MONITORED_METRICS: tuple[str, ...] = (
     "cpu_rate", "cpu_throttle_ratio", "mem_wss",
     "net_rx_rate", "net_tx_rate", "fs_read_rate", "fs_write_rate"
@@ -88,9 +80,8 @@ def aggregate_all_components(
     """Run onset aggregation for every component in the application.
 
     Applies ``aggregate_component_onset`` to each component independently
-    and returns a component-keyed dict of onset times.  This is the dict
-    consumed by the FChain master (Section II-C) to build the propagation
-    chain.
+    and returns a component-keyed dict of onset times for the cross-service
+    stage in ``fault_chain``.
 
     Parameters
     ----------
@@ -103,8 +94,8 @@ def aggregate_all_components(
     dict[str, int | None]
         { component_id -> component_onset | None }
 
-        Components whose onset is None showed no abnormal behavior and
-        will be excluded from the propagation chain by the master.
+        Components whose onset is None never looked abnormal here, so
+        ``fault_chain`` has nothing to rank for them.
 
     Examples
     --------

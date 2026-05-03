@@ -1,15 +1,10 @@
 """
 Time-series smoothing utilities for RCA preprocessing.
 
-Implements smoothing methods used before change-point detection in the FChain/PAL
-pipeline. These utilities reduce noise in system metrics (CPU, memory, network, disk)
-while preserving anomaly detection sensitivity.
-
-Key considerations for RCA:
-- EMA preferred for real-time processing and anomaly detection
-- Avoid oversmoothing that could mask genuine anomalies
-- Handle missing data (NaNs) gracefully
-- Maintain same-length outputs for downstream processing
+Light smoothing before CUSUM in ``fault_chain``. Mostly EMA; rolling mean
+is there if you want something dumber. Don't smooth so hard you kill real
+steps; keep NaNs from turning into fake plateaus; output length must match
+input for the rest of the pipeline.
 """
 
 import numpy as np

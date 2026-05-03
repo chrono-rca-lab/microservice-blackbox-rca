@@ -1,41 +1,26 @@
-"""FFT-based burst threshold filter for abnormal change point selection.
+"""Layer 3 — FFT high-frequency energy vs Markov prediction error.
 
-Design follows the FChain Section II-B specification exactly:
+Idea: grab a short window around each candidate change point, strip the
+slow trend in frequency space, threshold the remainder, and keep changes
+whose prediction error actually pops.
 
-Algorithm per change point
---------------------------
-1.  Extract a local window of 2*Q+1 samples centred on the change point
-    (truncated at series boundaries).
-2.  Apply real-valued FFT (np.fft.rfft) to the local window.
-3.  Zero out the bottom 10% of frequency coefficients by index
-    (low-frequency / slow-trend components).  Keep the top 90% by index
-    (high-frequency / burst components).  The DC component (index 0) is
-    always zeroed because it falls in the bottom 10%.
-4.  Apply inverse FFT (np.fft.irfft) to reconstruct the burst-only signal.
-5.  Threshold = 90th percentile of |burst_signal|.
-    Floor at 1e-10 to avoid a trivially zero threshold on flat signals.
-6.  Decision: prediction_error[t] > threshold  ->  ABNORMAL  (keep)
-              prediction_error[t] <= threshold ->  NORMAL    (discard)
+Rough flow per CP: local window → rfft → zero the low-frequency tail
+(~bottom 10% by bin index, DC included) → irfft → compare |burst| to its
+90th percentile (floored). Error above that passes; at or below drops.
 
-Fallback (window < 4 samples)
-------------------------------
-FFT is not meaningful with fewer than 4 samples.  In that case the
-threshold is set to the global 90th percentile of all prediction errors
-supplied for this call.  If no errors are available the change point is
-conservatively treated as abnormal.
+Tiny windows (<4 samples) skip FFT and fall back to the global 90th
+percentile of errors in this batch.
 
 Parameters
 ----------
 Q : int = 20
-    Half-window size in samples (seconds at 1 Hz).  FChain paper default.
+    Half-width in samples (20s each side at 1 Hz was the default we tuned with).
 high_freq_fraction : float = 0.90
-    Fraction of FFT coefficients (by index, high end) to keep as the
-    burst signal.  FChain paper: top 90%.
+    Keep the upper 90% of bins by index as "burst" energy.
 burst_percentile : float = 90.0
-    Percentile of |burst_signal| used as the threshold.
-    FChain paper: 90th percentile.
+    Where to cut |burst_signal| for the local threshold.
 threshold_floor : float = 1e-10
-    Minimum threshold to avoid false alarms on perfectly flat windows.
+    So flat patches don't produce a dead-zero threshold.
 """
 
 from __future__ import annotations
@@ -149,7 +134,7 @@ def filter_abnormal_change_points(
         )
 
         # ------------------------------------------------------------------
-        # Step 6: Decision  (strict greater-than per spec)
+        # Strict > so ties count as "not bursty enough"
         # ------------------------------------------------------------------
         if prediction_error > threshold:
             abnormal.append(t)
@@ -195,7 +180,7 @@ def _burst_threshold(
         Must have at least 4 elements (caller's responsibility).
     high_freq_fraction:
         Fraction of coefficients (from the high-frequency end) to keep.
-        FChain paper: 0.90  ->  keep top 90%, zero bottom 10%.
+        0.90 means keep the top 90% of bins by index, zero the rest.
     burst_percentile:
         Percentile of |burst_signal| to use as the threshold.
     threshold_floor:

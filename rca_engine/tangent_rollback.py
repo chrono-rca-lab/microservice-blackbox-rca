@@ -1,43 +1,14 @@
-"""Tangent-based rollback for anomaly onset time refinement.
+"""Layer 4 — walk earlier along CUSUM change points while slope looks the same.
 
-Design follows the FChain Section II-B specification exactly:
+Start from a change point that survived layers 2–3, then step backward
+through *every* layer-1 change point (including ones that were filtered).
+If the local tangent is still within ``tangent_threshold`` of the previous
+CP, treat the fault as having started earlier; otherwise stop.
 
-Algorithm
----------
-Starting from a CUSUM-detected abnormal change point, walk backward
-through the Layer-1 change point list (ALL detected change points,
-including those filtered out by Layers 2 and 3).
+Tangent: central diff in the middle, one-sided at the edges.
 
-At each step compare the tangent at the current change point against
-the tangent at the immediately preceding change point.
-
-  |tangent(current) - tangent(preceding)| < 0.1  ->  same slope
-      -> roll back: onset = preceding_cp
-      -> continue from preceding_cp
-
-  |tangent(current) - tangent(preceding)| >= 0.1 ->  slope changed
-      -> stop: current_cp is the true onset
-
-Tangent is computed via central difference:
-  tangent(t) = (series[t+1] - series[t-1]) / 2
-with forward / backward difference at the boundaries.
-
-Multi-metric aggregation
-------------------------
-Each component exposes 7 metrics.  Rollback is run independently per
-metric.  The component's onset time is the minimum across all metrics
-that show at least one abnormal change point.
-
-Public API
-----------
-  compute_tangent(series, t)                     -> float
-  rollback_onset(series, abnormal_cp,
-                 all_change_points,
-                 tangent_threshold)              -> int
-  compute_component_onset(series_per_metric,
-                           abnormal_cps_per_metric,
-                           all_cps_per_metric,
-                           tangent_threshold)    -> int | None
+Per service you run this per metric and take the earliest onset you get
+(see ``compute_component_onset``).
 """
 
 from __future__ import annotations
@@ -54,7 +25,7 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-_DEFAULT_TANGENT_THRESHOLD: float = 0.1   # FChain paper Section II-B
+_DEFAULT_TANGENT_THRESHOLD: float = 0.1   # hand-tuned; smaller = pickier
 
 
 # ---------------------------------------------------------------------------
@@ -148,7 +119,7 @@ def rollback_onset(
         Rollback walks through this list, not through raw sample indices.
     tangent_threshold:
         Maximum tangent difference to consider two change points as being
-        on the same slope.  FChain paper default: 0.1.
+        on the same slope. Default 0.1 here.
         Comparison is strict less-than: similar if diff < threshold.
 
     Returns

@@ -1,18 +1,18 @@
-"""Fault-chain integrated pinpointing algorithm (FChain Sections II-B/C).
+"""Integrated black-box RCA: per-metric detection, then multi-service ranking.
 
-Implements the full RCA pipeline described in the FChain paper:
+Phase 1 (per service/metric):
 
-  * Section II-B — per-service, per-metric abnormal change point selection:
-      Layer 1  CUSUM + Bootstrap        change-point candidates
-      Layer 2  Markov prediction model  prediction-error filtering
-      Layer 3  FFT burst threshold      burst-aware abnormality filter
-      Layer 4  Tangent rollback         onset-time refinement
-      Layer 5  Multi-metric aggregation earliest onset across metrics
+  Layer 1  CUSUM + bootstrap        candidates
+  Layer 2  Markov prediction error  weeds out flaky CUSUM hits
+  Layer 3  FFT burst gate           keeps bursty deviations
+  Layer 4  Tangent rollback         sharpens onset time
+  Layer 5  Multi-metric min         one onset per service
 
-  * Section II-C — integrated fault diagnosis across services:
-      Layer 6  Propagation chain        sort services by onset time
-      Layer 7  Root cause candidates    earliest onset + concurrency check
-      Layer 8  Dependency filter        remove spurious propagation paths
+Phase 2 (all services):
+
+  Layer 6  Sort by onset            propagation ordering
+  Layer 7  Root vs concurrent       timing + optional edge delays
+  Layer 8  Dependency filter        drop obvious propagation-only cases
 
 Typical usage from ``eval/run_experiment.py``::
 
@@ -25,10 +25,9 @@ Typical usage from ``eval/run_experiment.py``::
         step_seconds=1.0,
     )
 
-``ranked`` is a list of dicts ordered by FChain Section II-C ranking:
-root causes first (earliest onset), then downstream propagation victims.
-Each entry contains ``service``, ``onset_time``, ``confidence``,
-``abnormal_metrics``, and ``rank``.
+``ranked`` orders root-ish causes first (earliest onset), then the rest by
+the same onset/confidence ordering. Fields: ``service``, ``onset_time``,
+``confidence``, ``abnormal_metrics``, ``rank``.
 """
 
 from __future__ import annotations
@@ -56,14 +55,11 @@ from rca_engine.aggregation import MONITORED_METRICS
 # PropagationMap is imported lazily inside pinpoint() — only when a
 # propagation_map_path is supplied — to keep rca_engine free of a hard
 # dependency on the calibration/ package.
- 
-logger = logging.getLogger(__name__)
- 
-_DEFAULT_CHECKPOINT_ROOT = Path("checkpoints/markov")
-_logged_model_selections: set[tuple[str, str]] = set()
- 
 
 logger = logging.getLogger(__name__)
+
+_DEFAULT_CHECKPOINT_ROOT = Path("checkpoints/markov")
+_logged_model_selections: set[tuple[str, str]] = set()
 
 # Number of metric types tracked per service.
 # Used as the denominator when computing fallback per-service confidence.
@@ -85,14 +81,13 @@ def pinpoint(
     propagation_map_path: str | None = None,
     start_time: float | None = None,
     logs: list[dict] | None = None,
+    layer_timings: dict[str, float] | None = None,
 ) -> list[dict[str, Any]]:
-    """Run the full FChain RCA pipeline and return a ranked suspect list.
+    """Run the stacked RCA layers and return a ranked suspect list.
 
-    For each service in *metric_matrix*, every metric is analysed through
-    Layers 1-5 (Section II-B) to produce a rollback-refined onset timestamp.
-    The per-service onset times are then passed to Layers 6-8 (Section II-C)
-    which build the propagation chain, identify root causes, and filter out
-    services whose abnormality is explained by downstream propagation.
+    Each service/metric runs Layers 1–5 to get rollback-refined onsets,
+    folded to one onset per service. Layers 6–8 turn that into who we call
+    out as root-ish vs plausible propagation fallout.
 
     Parameters
     ----------
@@ -123,9 +118,8 @@ def pinpoint(
     Returns
     -------
     list[dict]
-        One entry per abnormal service, ordered by FChain Section II-C
-        ranking: root causes first (by onset time), then propagation victims
-        (by onset time).  Each dict contains:
+        One row per abnormal service: roots-ish first by onset, then others.
+        Each dict has:
 
         ``service``          service name
         ``onset_time``       POSIX timestamp of the earliest detected onset
@@ -138,6 +132,8 @@ def pinpoint(
         start_time = time.time()
     if logs is None:
         logs = []
+    if layer_timings is None:
+        layer_timings = _init_layer_timings()
     
     # Log the START_PINPOINT stage
     stage_start = time.time()
@@ -150,8 +146,7 @@ def pinpoint(
     ft_start, ft_end = fault_window
 
     logger.info(
-        "FChain RCA: starting pinpoint on %d services, "
-        "baseline_window=[%.0f, %.0f], fault_window=[%.0f, %.0f]",
+        "RCA pinpoint: %d services, baseline=[%.0f, %.0f], fault=[%.0f, %.0f]",
         len(metric_matrix), bl_start, bl_end, ft_start, ft_end,
     )
     full_start = bl_start  # metric arrays are aligned to baseline start
@@ -180,11 +175,13 @@ def pinpoint(
         metric_confs: dict[str, float] = {}
 
         for metric_name, full_series in metrics.items():
+            t0 = time.perf_counter()
             baseline_data, fault_data = _split_series(
                 full_series, full_start, baseline_window, fault_window,
                 step=step_seconds,
             )
             if len(fault_data) < 3 or len(baseline_data) < 2:
+                _accumulate_layer_time(layer_timings, "layer0", time.perf_counter() - t0)
                 continue
 
             # Apply EMA smoothing to reduce noise before change-point detection
@@ -194,6 +191,7 @@ def pinpoint(
                 "Applied EMA smoothing to %s.%s (baseline: %d samples, fault: %d samples)",
                 service, metric_name, len(smoothed_baseline), len(smoothed_fault)
             )
+            _accumulate_layer_time(layer_timings, "layer0", time.perf_counter() - t0)
 
             metric_analysis = _analyze_metric(
                 baseline_data=smoothed_baseline,
@@ -203,6 +201,7 @@ def pinpoint(
                 step_seconds=step_seconds,
                 start_time=start_time,
                 logs=logs,
+                layer_timings=layer_timings,
             )
             if metric_analysis is None:
                 continue
@@ -220,17 +219,19 @@ def pinpoint(
                 if earliest_onset is None or ts < earliest_onset:
                     earliest_onset = ts
 
+        t5 = time.perf_counter()
         if earliest_onset is not None:
             service_onsets[service] = earliest_onset
             service_trends[service] = _determine_trend(all_directions)
             service_abnormal_metrics[service] = abnormal_metric_names
             service_metric_confidences[service] = metric_confs
+        _accumulate_layer_time(layer_timings, "layer5", time.perf_counter() - t5)
 
     if not service_onsets:
         return []
 
     # ------------------------------------------------------------------
-    # Layers 6-8: integrated fault diagnosis (FChain Section II-C)
+    # Layers 6–8: cross-service diagnosis
     # ------------------------------------------------------------------
     dep_graph = get_dependency_graph()
 
@@ -253,6 +254,7 @@ def pinpoint(
         n_monitored_services=n_monitored_services,
         concurrency_threshold_s=2.0,
         propagation_map=prop_map,
+        layer_timings=layer_timings,
     )
 
     pinpointed_set = set(pinpointed)
@@ -295,7 +297,7 @@ def pinpoint(
 
     if ranked_results:
         logger.info(
-            "FChain RCA: finished ranking %d services, top=%s confidence=%.3f",
+            "RCA pinpoint done: %d services, top=%s confidence=%.3f",
             len(ranked_results),
             ranked_results[0].get("service", ""),
             ranked_results[0].get("confidence", 0.0),
@@ -309,7 +311,7 @@ def pinpoint(
 
 
 # ---------------------------------------------------------------------------
-# Pinpointing logic (FChain Section II-C)
+# Cross-service pinpointing (layers 6–8)
 # ---------------------------------------------------------------------------
 
 def pinpoint_faults(
@@ -319,10 +321,11 @@ def pinpoint_faults(
     n_monitored_services: int = 0,
     concurrency_threshold_s: float = 2.0,
     propagation_map: "PropagationMap | None" = None,
+    layer_timings: dict[str, float] | None = None,
 ) -> list[str]:
-    """Identify faulty services using the FChain Section II-C algorithm.
+    """Pick services we treat as primary faults vs propagation-only.
 
-    Runs three sequential layers:
+    Three layers:
 
     Layer 6 — Build propagation chain
         Sort all abnormal services by their rollback-refined onset time.
@@ -370,7 +373,7 @@ def pinpoint_faults(
         Pass ``0`` to skip the external cause check.
     concurrency_threshold_s :
         Fallback onset-time gap (seconds) used when no propagation map is
-        available or an edge has no calibration data.  FChain default: 2.0.
+        available or an edge has no calibration row. Default here: 2.0 s.
     propagation_map :
         Optional per-edge delay map from ``calibration/propagation_map.py``.
         When provided, Layer 7 uses calibrated per-edge thresholds instead
@@ -382,8 +385,8 @@ def pinpoint_faults(
           onset_diff >  edge_threshold  → outside window, too slow for
                                           propagation → concurrent fault
 
-        When the map is None the original FChain behaviour is preserved
-        exactly (flat global threshold + early break).
+        With no map we keep it simple: one global threshold and we stop at
+        the first late starter (everything after is treated as downstream).
 
     Returns
     -------
@@ -396,6 +399,7 @@ def pinpoint_faults(
         return []
 
     # Layer 6 — build propagation chain by sorting on onset time
+    t6 = time.perf_counter()
     sorted_svcs = sorted(service_onsets, key=lambda s: service_onsets[s])
 
     # External cause check: every monitored service is abnormal AND all
@@ -413,11 +417,14 @@ def pinpoint_faults(
                 len(sorted_svcs),
                 next(iter(unique_trends)),
             )
+            _accumulate_layer_time(layer_timings, "layer6", time.perf_counter() - t6)
             return []
+    _accumulate_layer_time(layer_timings, "layer6", time.perf_counter() - t6)
 
     # Layer 7 — primary root cause is the earliest-onset service.
     # Any service that started within the concurrency window is also
     # pinpointed as an independent concurrent fault rather than a victim.
+    t7 = time.perf_counter()
     pinpointed: list[str] = [sorted_svcs[0]]
     first_onset = service_onsets[sorted_svcs[0]]
 
@@ -449,7 +456,7 @@ def pinpoint_faults(
             if not is_propagation_victim:
                 pinpointed.append(svc)
         else:
-            # Original FChain behaviour: flat global threshold + early break.
+            # No map: global gap + stop at first victim-scale delay.
             if onset_diff <= concurrency_threshold_s:
                 # Started close enough that propagation cannot explain the gap.
                 pinpointed.append(svc)
@@ -457,11 +464,13 @@ def pinpoint_faults(
                 # This service started late enough to be a downstream victim.
                 # All subsequent services started even later, so stop scanning.
                 break
+    _accumulate_layer_time(layer_timings, "layer7", time.perf_counter() - t7)
 
     # Layer 8 — for every remaining abnormal service, determine whether
     # its abnormality is reachable from any already-pinpointed root cause
     # via forward propagation or back-pressure.  If not, it is an
     # independent fault and is added to the pinpointed set.
+    t8 = time.perf_counter()
     for svc in sorted_svcs:
         if svc in pinpointed:
             continue
@@ -474,6 +483,7 @@ def pinpoint_faults(
 
         if not is_propagation_victim:
             pinpointed.append(svc)
+    _accumulate_layer_time(layer_timings, "layer8", time.perf_counter() - t8)
 
     return pinpointed
 
@@ -494,6 +504,7 @@ def _analyze_metric(
     force_window: int | None = None,
     start_time: float | None = None,
     logs: list[dict] | None = None,
+    layer_timings: dict[str, float] | None = None,
 ) -> tuple[list[int], list[str], list[float]] | None:
     """Run Layers 1-4 for a single metric of a single service.
  
@@ -533,6 +544,7 @@ def _analyze_metric(
     # ------------------------------------------------------------------
     # Layer 1: CUSUM + Bootstrap
     # ------------------------------------------------------------------
+    t1 = time.perf_counter()
     result = run_layer1(
         time_series=fault_data,
         baseline_data=baseline_data,
@@ -540,6 +552,7 @@ def _analyze_metric(
         start_time=start_time,
         logs=logs,
     )
+    _accumulate_layer_time(layer_timings, "layer1", time.perf_counter() - t1)
     if not result.change_points:
         return None
  
@@ -549,6 +562,7 @@ def _analyze_metric(
     # ------------------------------------------------------------------
     # Layer 2: Markov model — load checkpoint or fit from baseline
     # ------------------------------------------------------------------
+    t2 = time.perf_counter()
     model = _build_model(
         baseline_data   = baseline_data,
         fault_data      = fault_data,
@@ -580,6 +594,7 @@ def _analyze_metric(
     pred_errors_at_crossing = model.prediction_errors_for(
         crossing_indices, fault_data,
     )
+    _accumulate_layer_time(layer_timings, "layer2", time.perf_counter() - t2)
  
     # Remap errors to be keyed by onset index. Layer 3 centres its FFT
     # window on the dict key, so keying by onset places the window in
@@ -593,10 +608,12 @@ def _analyze_metric(
     # ------------------------------------------------------------------
     # Layer 3: FFT burst filter
     # ------------------------------------------------------------------
+    t3 = time.perf_counter()
     abnormal_cps: list[int] = filter_abnormal_change_points(
         fault_data, pred_errors_by_onset, Q=fft_Q,
         start_time=start_time, logs=logs,
     )
+    _accumulate_layer_time(layer_timings, "layer3", time.perf_counter() - t3)
     if not abnormal_cps:
         return None
  
@@ -612,6 +629,7 @@ def _analyze_metric(
     directions:    list[str]   = []
     confidences:   list[float] = []
  
+    t4 = time.perf_counter()
     for cp in abnormal_cps:
         refined_onset = rollback_onset(
             series=fault_data,
@@ -623,6 +641,7 @@ def _analyze_metric(
         onset_indices.append(refined_onset)
         directions.append(cp_to_direction.get(cp, "up"))
         confidences.append(cp_to_confidence.get(cp, 0.0))
+    _accumulate_layer_time(layer_timings, "layer4", time.perf_counter() - t4)
  
     if not onset_indices:
         return None
@@ -711,6 +730,24 @@ def _build_model(
         metric_min = lo,
         metric_max = hi,
     ).fit(baseline_data)
+
+
+def _init_layer_timings() -> dict[str, float]:
+    """Initialize aggregate layer timings for Layers 0-8."""
+    return {f"layer{i}": 0.0 for i in range(9)}
+
+
+def _accumulate_layer_time(
+    layer_timings: dict[str, float] | None,
+    layer_key: str,
+    elapsed_s: float,
+) -> None:
+    """Accumulate elapsed time into one layer bucket."""
+    if layer_timings is None:
+        return
+    if layer_key not in layer_timings:
+        layer_timings[layer_key] = 0.0
+    layer_timings[layer_key] += float(elapsed_s)
  
 # ---------------------------------------------------------------------------
 # Helpers

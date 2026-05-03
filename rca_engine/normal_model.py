@@ -1,21 +1,12 @@
-"""Online normal-behaviour model for per-service metrics (Markov chain prediction).
+"""Layer 2 — Discrete Markov-ish model over binned metric values.
 
-Design follows the FChain / PRESS specification exactly:
-  - M = 100 fixed bins (PRESS paper default)
-  - Continuous online updates via update() during normal operation
-  - Model is frozen during fault localisation (freeze() / unfreeze())
-  - Unseen states return maximum possible prediction error
-  - prediction_error_at(t) returns a single float for one change-point index
-  - prediction_errors_for(change_points) returns a dict {index: error}
+Loosely patterned on PRESS-style online Markov modelling: fixed-width bins,
+row-normalised transition counts, freeze while you're localising faults,
+and "never saw this predecessor state" blows the error wide open so Layer 3
+can still react.
 
-Typical lifecycle
------------------
-1.  fit(baseline)          — warm-up on initial clean baseline data
-2.  update(value)          — called every second during normal operation
-3.  freeze()               — called when SLO violation is detected
-4.  prediction_errors_for(change_points, series)
-                           — called once per fault localisation run
-5.  unfreeze()             — called after fault is resolved
+Rough lifecycle: ``fit(baseline)`` → ``update()`` while healthy → ``freeze``
+when you're in incident mode → ``prediction_errors_for(...)`` → ``unfreeze()``.
 """
 
 from __future__ import annotations
@@ -28,10 +19,10 @@ if TYPE_CHECKING:
 
 
 # ---------------------------------------------------------------------------
-# Constants (from PRESS paper and FChain spec)
+# Defaults tuned with PRESS in mind but not a strict reproduction
 # ---------------------------------------------------------------------------
 
-_DEFAULT_BINS: int = 40          # PRESS paper: M = 100 equal-width bins
+_DEFAULT_BINS: int = 40          # (training script often saves 100 bins)
 _UNIFORM_FILL: float = 1.0       # used to initialise unseen rows before normalisation
 
 
