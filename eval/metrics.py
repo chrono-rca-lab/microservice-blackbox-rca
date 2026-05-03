@@ -1,1 +1,1 @@
-"""Evaluation metrics for RCA output."""
+"""Helpers for scoring and summarizing RCA output."""

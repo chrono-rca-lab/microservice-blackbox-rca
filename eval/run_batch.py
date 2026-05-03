@@ -1,9 +1,5 @@
-"""Batch experiment runner.
+"""Walk YAML matrix rows and invoke run_experiment.py one after another.
 
-Reads an experiment_matrix.yaml and runs each experiment sequentially
-with a configurable cooldown between runs.
-
-Usage:
     python eval/run_batch.py --matrix experiments/experiment_matrix.yaml
     python eval/run_batch.py --matrix experiments/experiment_matrix.yaml --cooldown 120
 """
@@ -35,7 +31,7 @@ RUN_SCRIPT = Path(__file__).parent / "run_experiment.py"
 )
 @click.option("--dry-run", is_flag=True, help="Print commands without running.")
 def run_batch(matrix: str, cooldown: int | None, dry_run: bool) -> None:
-    """Run all experiments defined in the matrix file."""
+    """Fire every stanza from the YAML in order."""
     config = yaml.safe_load(Path(matrix).read_text())
     experiments = config.get("experiments", [])
     cooldown_s   = cooldown if cooldown is not None else config.get("cooldown_seconds", 120)
@@ -80,7 +76,6 @@ def run_batch(matrix: str, cooldown: int | None, dry_run: bool) -> None:
             click.echo(f"\n{cooldown_s}s before next run …\n")
             time.sleep(cooldown_s)
 
-    # Summary
     click.echo(f"\n{'='*50}")
     click.echo(f"Batch complete.  {len(experiments) - len(failed)}/{len(experiments)} succeeded.")
     if failed:

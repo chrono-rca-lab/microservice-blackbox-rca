@@ -1,19 +1,18 @@
-"""Move a boutique service to the dedicated experiment-target node before injection.
+"""Pin a Boutique deployment onto the experiment-target node before injecting a fault.
 
-Used via --isolate in run_experiment.py / run_experiment_slo.py to physically
-isolate the service under test on its own machine. When emailservice is alone on
-Machine 4, any cpu/mem anomaly detected by cAdvisor is purely from the injected
-fault — not from currencyservice or paymentservice sharing the same node.
+`--isolate` in the runners does this so cAdvisor anomalies on the victim pod are
+easier to read (no contention from unrelated services on the same machine).
 
-Requires a cluster node labelled  role=experiment-target  (Machine 4 in the VCL
-4-node layout). See infra/VCL_README.md for setup instructions.
+Needs a node with label `role=experiment-target` (Machine 4 in our VCL setup);
+see infra/VCL_README.md.
 
-Usage from experiment runners:
-    original = move_to_experiment_node("emailservice")
+Typical pattern:
+
+    sel = move_to_experiment_node("emailservice")
     try:
-        ... run experiment ...
+        ...
     finally:
-        restore_service("emailservice", original)
+        restore_service("emailservice", sel)
 """
 
 import json
@@ -49,13 +48,10 @@ def _wait_rollout(service: str, timeout: int = 120) -> None:
 
 
 def move_to_experiment_node(service: str) -> dict[str, Any]:
-    """Patch service deployment to run on the experiment-target node.
+    """Pin the workload to experiment-target and wait until the rollout settles.
 
-    Waits for the rollout to complete (old pod gone, new pod Ready) before
-    returning. The experiment baseline should start only after this returns
-    so the new node's metrics are captured in the normal distribution.
-
-    Returns the original nodeSelector so restore_service can put it back.
+    Call this before baseline so “normal” traffic is scraped on the new node.
+    Returned dict is the previous nodeSelector; pass it back to restore_service().
     """
     raw = _kubectl(
         "get", "deployment", service,
@@ -72,7 +68,7 @@ def move_to_experiment_node(service: str) -> dict[str, Any]:
 
 
 def restore_service(service: str, original_selector: dict[str, Any]) -> None:
-    """Restore service to its original node after the experiment."""
+    """Put the deployment back where it came from."""
     print(f"  [isolate] restoring {service} → {original_selector} …")
     _patch_node_selector(service, original_selector)
     _wait_rollout(service)

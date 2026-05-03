@@ -4,16 +4,13 @@
 # injector: "chaos" uses fault_injection/chaos_inject.py (Chaos Mesh CRDs)
 #           "exec"  uses fault_injection/inject.py        (kubectl exec — shell required)
 #
-# Injectable services (have /bin/sh): adservice, currencyservice, emailservice,
-#                                     paymentservice, recommendationservice
-# Distroless (no shell, cannot inject via exec): cartservice, checkoutservice, frontend,
-#                                                productcatalogservice, shippingservice
+# Pods with shells: adservice, currencyservice, emailservice,
+#                    paymentservice, recommendationservice.
+# Pure distroless (skip exec injector): cartservice, checkoutservice, frontend,
+#                                       productcatalogservice, shippingservice.
 #
-# Requires infra/boutique-manifests-patched.yaml to be applied so that:
-#   - readOnlyRootFilesystem is removed  (disk_hog needs writable /tmp)
-#   - NET_ADMIN is present               (net_delay needs tc netem)
-#   - emptyDir at /tmp is mounted        (provides a block-backed writable path)
-# Run: bash infra/deploy-boutique.sh   to apply the patches.
+# Boutique needs the patched manifests (writable /tmp + NET_ADMIN, etc.);
+# infra/deploy-boutique.sh applies them.
 
 cooldown_seconds: 120
 

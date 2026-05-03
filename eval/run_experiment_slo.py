@@ -1,34 +1,15 @@
-"""Experiment orchestrator: inject → wait for SLO violation → collect → RCA → score.
+"""Same choreography as run_experiment.py except we unblock on frontend SLO breakage.
 
-SLO-triggered pipeline — RCA fires as soon as the frontend SLO is violated
-(plus a short observation buffer to accumulate fault-window metrics).
-Injector selection:
-  - cpu_hog / mem_leak / net_delay / packet_loss → chaos_inject.py (Chaos Mesh)
-      Works on all services including distroless Go containers.
-  - disk_hog → inject.py (kubectl exec)
-      Fallback: IOChaos requires FUSE kernel support not available on kind.
-      disk_hog only works on services with /bin/sh (adservice, recommendationservice,
-      emailservice, paymentservice, currencyservice).
+Injector split matches the sibling script (Chaos Mesh vs shell exec for disk_hog).
 
-Schedule:
-    1. Start load generator
-    2. Baseline period (BASELINE_DURATION s)
-    3. Inject fault + start SLO monitor (background)
-    4. Wait until SLO violation fires OR fault duration elapses (whichever comes first)
-       4a. SLO violation path: wait SLO_OBSERVATION_BUFFER s, then proceed
-       4b. Duration-elapsed path: proceed immediately (same as run_experiment.py)
-    5. Collect metrics (windows anchored to injection time)
-    6. Run RCA
-    7. Reap inject subprocess + recovery
+If p95 hops the threshold inside `--duration`, we sleep SLO_OBSERVATION_BUFFER more so
+fault-window samples exist before RCA. Otherwise we wait the full duration and still
+run RCA (good for faults that bruise internals but barely move latency).
 
-Best fault/service combos guaranteed to trigger SLO violations:
-    python eval/run_experiment_slo.py --fault net_delay  --service checkoutservice       --duration 120
-    python eval/run_experiment_slo.py --fault net_delay  --service currencyservice       --duration 120
-    python eval/run_experiment_slo.py --fault net_delay  --service cartservice           --duration 120
-    python eval/run_experiment_slo.py --fault net_delay  --service productcatalogservice --duration 120
-    python eval/run_experiment_slo.py --fault net_delay  --service emailservice          --duration 120
-    python eval/run_experiment_slo.py --fault cpu_hog    --service checkoutservice       --duration 120
-    python eval/run_experiment_slo.py --fault cpu_hog    --service frontend              --duration 120
+Handy smoke targets that usually violate quickly:
+    python eval/run_experiment_slo.py --fault net_delay  --service checkoutservice --duration 120
+    python eval/run_experiment_slo.py --fault net_delay  --service cartservice --duration 120
+    python eval/run_experiment_slo.py --fault cpu_hog    --service frontend --duration 120
 """
 
 import json
@@ -42,9 +23,6 @@ from pathlib import Path
 
 import click
 
-# ---------------------------------------------------------------------------
-# Project root on sys.path so sibling packages are importable
-# ---------------------------------------------------------------------------
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
 
@@ -56,47 +34,36 @@ EXPERIMENTS_DIR     = ROOT / "experiments"
 CHAOS_INJECT_SCRIPT = ROOT / "fault_injection" / "chaos_inject.py"
 EXEC_INJECT_SCRIPT  = ROOT / "fault_injection" / "inject.py"
 
-# Faults handled by the old kubectl-exec injector (shell required in container).
-# IOChaos needs FUSE which is unavailable on kind — fall back to shell script.
 EXEC_ONLY_FAULTS = {"disk_hog"}
 
-SLO_MULTIPLIER        = 1.4  # SLO threshold = this × baseline p95
-BASELINE_DURATION     = 40    # seconds of steady-state before injection
-BASELINE_END_BUFFER   = 10    # seconds trimmed from the tail of the baseline window
-SLO_OBSERVATION_BUFFER = 30   # seconds to keep observing after SLO violation before running RCA
-RECOVERY_WAIT         = 30    # seconds of post-fault observation before stopping loadgen
-SLO_POLL_INTERVAL     = 5     # seconds between SLO polls
+SLO_MULTIPLIER         = 1.7   # multiplier on measured baseline p95
+BASELINE_DURATION      = 70
+BASELINE_END_BUFFER    = 10    # shorten fitted baseline away from injection edge
+SLO_OBSERVATION_BUFFER = 30    # linger after crossing so RCA sees enough fault-era points
+RECOVERY_WAIT          = 30
+SLO_POLL_INTERVAL      = 5
 FRONTEND_URL          = "http://localhost:8080"
 PROMETHEUS_URL        = "http://localhost:9090"
 NAMESPACE             = "boutique"
-FALLBACK_MIN_S        = 45    
-FALLBACK_MAX_S        = 55    
+FALLBACK_MIN_S        = 45     # Synthetic “violation” if nothing real fires quickly (debug path)
+FALLBACK_MAX_S        = 55
 
-# ---------------------------------------------------------------------------
-# SLO monitor — background thread, signals main thread on first violation
-# ---------------------------------------------------------------------------
 
 class SLOMonitor:
-    """Polls frontend p95 latency and signals the main thread on first violation.
-
-    Sets a threading.Event the moment the SLO is first breached so the main
-    orchestrator can unblock early and run RCA without waiting for the full
-    fault duration.
-    """
+    """Background p95 watcher; sets `.violation_event` on first crossing."""
 
     def __init__(self, gen: WorkloadGenerator, threshold_ms: float) -> None:
         self._gen = gen
         self._threshold_ms = threshold_ms
         self._violation_time: float | None = None
         self._stop = threading.Event()
-        self._violation_event = threading.Event()   # set on first violation
+        self._violation_event = threading.Event()
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self._fallback_timer: threading.Timer | None = None
 
     @property
     def violation_event(self) -> threading.Event:
-        """Event that is set the moment the first SLO violation is detected."""
         return self._violation_event
 
     def start(self) -> None:
@@ -146,12 +113,8 @@ class SLOMonitor:
                         f"  [slo] VIOLATION detected — p95={ms:.0f}ms"
                         f" (threshold={self._threshold_ms:.0f}ms)"
                     )
-                    self._violation_event.set()     # unblock main thread
+                    self._violation_event.set()
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 def _ts() -> float:
     return time.time()
@@ -161,8 +124,12 @@ def _iso(ts: float) -> str:
     return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
 
 
-def _format_rca_output(logs: list, ranked: list) -> list[str]:
-    """Clean RCA output: service-wise, RCA-relative timing (starts at 0)."""
+def _format_rca_output(
+    logs: list,
+    ranked: list,
+    layer_timings: dict[str, float] | None = None,
+) -> list[str]:
+    """Readable timeline; layer stamps relative to RCA start."""
 
     LAYER_LABELS = {
         "START_PINPOINT": "RCA Pipeline Start",
@@ -172,9 +139,6 @@ def _format_rca_output(logs: list, ranked: list) -> list[str]:
         "FINAL_RANKING": "Final Ranking",
     }
 
-    # --------------------------------------------------
-    # Get FIRST occurrence of each layer
-    # --------------------------------------------------
     layer_events = {}
     for entry in logs:
         stage = entry.get("stage")
@@ -184,26 +148,29 @@ def _format_rca_output(logs: list, ranked: list) -> list[str]:
             if label not in layer_events:
                 layer_events[label] = ts
 
-    # --------------------------------------------------
-    # RCA start time = earliest layer timestamp
-    # --------------------------------------------------
     if not layer_events:
         return ["No RCA logs found"]
 
     rca_start = min(layer_events.values())
 
     txt_lines = []
+    if layer_timings:
+        txt_lines.append("Layer-by-Layer Timing (seconds):")
+        for i in range(9):
+            key = f"layer{i}"
+            val = layer_timings.get(key)
+            txt_lines.append(
+                f"  Layer {i}: {'n/a' if val is None else f'{float(val):.6f}'}"
+            )
+        txt_lines.append("")
+
     txt_lines.insert(0, "RCA Service Timeline")
 
-    # --------------------------------------------------
-    # SERVICE OUTPUT
-    # --------------------------------------------------
     for svc in ranked:
         name = svc.get("service")
         onset = svc.get("onset_time")
         abnormal_metrics = svc.get("abnormal_metrics") or []
 
-        # Format onset
         if isinstance(onset, (int, float)):
             onset_str = datetime.fromtimestamp(onset, timezone.utc).isoformat()
         else:
@@ -218,9 +185,6 @@ def _format_rca_output(logs: list, ranked: list) -> list[str]:
 
         txt_lines.append("\n  RCA Pipeline:")
 
-        # --------------------------------------------------
-        # LAYER TIMING (relative to RCA start)
-        # --------------------------------------------------
         ordered_layers = [
             "RCA Pipeline Start",
             "Layer 1 (CUSUM Detection)",
@@ -238,9 +202,6 @@ def _format_rca_output(logs: list, ranked: list) -> list[str]:
 
     return txt_lines
 
-# ---------------------------------------------------------------------------
-# RCA
-# ---------------------------------------------------------------------------
 
 def run_rca(
     metric_matrix: dict,
@@ -249,13 +210,13 @@ def run_rca(
     run_dir: Path,
     propagation_map_path: str | None = None,
 ) -> dict:
-    """Call the RCA engine and return a results dict."""
+    """Run pinpoint; drop timing + text under run_dir."""
     try:
         from rca_engine import fault_chain
-        
-        # Initialize timing collection
+
         start_time = time.time()
         logs: list[dict] = []
+        layer_timings: dict[str, float] = {}
         
         ranked = fault_chain.pinpoint(
             metric_matrix=metric_matrix,
@@ -264,63 +225,43 @@ def run_rca(
             propagation_map_path=propagation_map_path,
             start_time=start_time,
             logs=logs,
+            layer_timings=layer_timings,
         )
-        
-        # Prepare output with timing information
+
         total_time = time.time() - start_time
         result = {
             "ranked_services": ranked,
             "total_time_seconds": total_time,
+            "layer_timings_seconds": layer_timings,
             "timing_logs": logs,
         }
-        
-        # Save timing JSON to file
+
         output_file = run_dir / "rca_timing.json"
         output_file.write_text(json.dumps(result, indent=2))
         click.echo(f"  [rca] timing data saved to {output_file}")
-        
-        # Generate clean service-centric timeline
-        txt_lines = _format_rca_output(logs, ranked)
+
+        txt_lines = _format_rca_output(logs, ranked, layer_timings=layer_timings)
         txt_lines.insert(0, f"Total RCA time: {total_time:.3f} seconds")
         txt_lines.insert(0, "")
         txt_lines.insert(0, f"Saved: {datetime.now(timezone.utc).isoformat()}")
         txt_lines.insert(0, "RCA Service Timeline (Onset-based)")
 
-        # ---------------------------------------------------
-        # Save output
-        # ---------------------------------------------------
         output_txt = run_dir / "output.txt"
         output_txt.write_text("\n".join(txt_lines))
         click.echo(f"  [rca] text summary saved to {output_txt}")
 
         return {"ranked_services": ranked}
     except NotImplementedError:
-        click.echo("  [rca] fault_chain.pinpoint not yet implemented — saving placeholder")
+        click.echo("  [rca] pinpoint not wired up yet — stub result only")
         return {"status": "rca_not_implemented"}
     except Exception as exc:
         click.echo(f"  [rca] error: {exc}", err=True)
         return {"status": "error", "error": str(exc)}
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 def _save_json(path: Path, obj: dict) -> None:
     path.write_text(json.dumps(obj, indent=2, default=str))
 
-
-def _ts() -> float:
-    return time.time()
-
-
-def _iso(ts: float) -> str:
-    return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
-
-
-# ---------------------------------------------------------------------------
-# Main orchestrator
-# ---------------------------------------------------------------------------
 
 @click.command()
 @click.option("--fault",      required=True,
@@ -378,7 +319,7 @@ def _run_slo_body(
     concurrent: str | None,
     propagation_map: str | None,
 ) -> None:
-    """Inner SLO experiment body — called by run() with optional isolation wrapper."""
+    """Core SLO-mode run; isolate wrapper lives in `run()`."""
     run_dir = EXPERIMENTS_DIR / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
 
@@ -400,9 +341,7 @@ def _run_slo_body(
     }
     client = PrometheusMetricsClient(prometheus_url=PROMETHEUS_URL)
 
-    # ------------------------------------------------------------------
-    # 1. Start load generator
-    # ------------------------------------------------------------------
+    # 1. Load generator
     click.echo("[1/7] Starting load generator …")
     gen = WorkloadGenerator(frontend_url=FRONTEND_URL, quiet=True)
     total_gen_duration = BASELINE_DURATION + duration + RECOVERY_WAIT + 60
@@ -410,16 +349,13 @@ def _run_slo_body(
     experiment_start = _ts()
     timeline["events"]["experiment_start"] = experiment_start
 
-    # ------------------------------------------------------------------
-    # 2. Baseline period
-    # ------------------------------------------------------------------
+    # 2. Baseline (need p95 here or we abort)
     click.echo(f"[2/7] Baseline period ({BASELINE_DURATION}s) …")
     baseline_start = _ts()
     time.sleep(BASELINE_DURATION)
     baseline_end = _ts()
     timeline["events"]["baseline_end"] = baseline_end
 
-    # Dynamic SLO threshold: SLO_MULTIPLIER × measured baseline p95
     baseline_p95 = gen.current_p95(window_seconds=BASELINE_DURATION)
     if baseline_p95 is None:
         raise RuntimeError("Baseline p95 unavailable — loadgen produced no data during baseline window")
@@ -431,9 +367,7 @@ def _run_slo_body(
     timeline["baseline_p95_ms"]  = round(baseline_p95 * 1000, 1) if baseline_p95 else None
     timeline["slo_threshold_ms"] = dynamic_threshold_ms
 
-    # ------------------------------------------------------------------
-    # 3. Inject fault + start SLO monitor in background
-    # ------------------------------------------------------------------
+    # 3. Inject + SLO watcher
     use_exec = fault in EXEC_ONLY_FAULTS
     inject_script = EXEC_INJECT_SCRIPT if use_exec else CHAOS_INJECT_SCRIPT
     injector_label = "exec" if use_exec else "chaos"
@@ -464,21 +398,7 @@ def _run_slo_body(
     slo_monitor = SLOMonitor(gen, threshold_ms=dynamic_threshold_ms)
     slo_monitor.start()
 
-    # ------------------------------------------------------------------
-    # 4. Wait until SLO violation fires OR full duration elapses
-    #
-    #    violation_event.wait(timeout=duration) blocks until either:
-    #      - The SLO monitor sets the event (violation detected) → returns True
-    #      - timeout seconds pass with no violation             → returns False
-    #
-    #    SLO-triggered path: wait SLO_OBSERVATION_BUFFER more seconds so
-    #    the fault window has enough metric samples for the RCA engine.
-    #
-    #    Duration-elapsed path: proceed immediately, identical to
-    #    run_experiment.py — used for faults that degrade system metrics
-    #    but don't surface as frontend latency spikes (e.g. mem_leak,
-    #    recommendationservice faults).
-    # ------------------------------------------------------------------
+    # 4. Block on SLO event or full duration; buffer only on the fast path
     click.echo(
         f"[4/7] Waiting for SLO violation (max {duration}s) …"
         f"  observation buffer after violation: {SLO_OBSERVATION_BUFFER}s"
@@ -503,7 +423,6 @@ def _run_slo_body(
     timeline["events"]["fault_end"]  = fault_end_time
     timeline["triggered_by"]         = triggered_by
 
-    # Harvest SLO result
     violation_time = slo_monitor.stop()
     timeline["slo"]["violation_time"] = violation_time
     if violation_time is not None:
@@ -512,9 +431,7 @@ def _run_slo_body(
     else:
         timeline["slo"]["diagnosis_latency_seconds"] = None
 
-    # ------------------------------------------------------------------
-    # 5. Collect metrics — windows anchored to injection time
-    # ------------------------------------------------------------------
+    # 5. Scrape windows (same trims as run_experiment.py)
     baseline_window_start = injection_time - BASELINE_DURATION
     baseline_window_end   = injection_time - BASELINE_END_BUFFER
     fault_window_start    = injection_time
@@ -547,9 +464,7 @@ def _run_slo_body(
         click.echo(f"  WARNING: metrics fetch failed: {exc}", err=True)
         matrix = {}
 
-    # ------------------------------------------------------------------
-    # 6. Run RCA
-    # ------------------------------------------------------------------
+    # 6. RCA
     click.echo("[6/7] Running RCA …")
     rca_start = _ts()
     rca_results = run_rca(
@@ -565,13 +480,7 @@ def _run_slo_body(
     _save_json(run_dir / "rca_results.json", rca_results)
     click.echo(f"  rca done in {rca_end - rca_start:.1f}s")
 
-    # ------------------------------------------------------------------
-    # 7. Reap inject subprocess + recovery period
-    #
-    #    The inject subprocess runs for the full --duration it was given.
-    #    If RCA triggered early (slo_violation path), the fault may still
-    #    be active here — communicate() will block until it exits naturally.
-    # ------------------------------------------------------------------
+    # 7. Wait for injector subprocess (may outlive early RCA) then cool down
     click.echo(f"[7/7] Collecting inject output + recovery ({RECOVERY_WAIT}s) …")
     try:
         stdout, stderr = inject_proc.communicate(timeout=duration + 60)
@@ -593,9 +502,6 @@ def _run_slo_body(
 
     _save_json(run_dir / "timeline.json", timeline)
 
-    # ------------------------------------------------------------------
-    # Summary
-    # ------------------------------------------------------------------
     click.echo(f"\n{'='*60}")
     click.echo(f"  Experiment complete  —  artifacts in {run_dir}")
     click.echo(f"  Total duration : {experiment_end - experiment_start:.0f}s")
