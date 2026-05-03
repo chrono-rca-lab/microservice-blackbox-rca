@@ -1,13 +1,11 @@
-"""Chaos Mesh fault injection CLI.
+"""Apply Chaos Mesh manifests, wait until the injector reports ready, sleep, tear down.
 
-Applies pre-templated Chaos Mesh CRs, waits for injection confirmation,
-then cleans up on exit.  Drop-in replacement for inject.py that works on
-distroless containers (no shell required).
+distroless images have no shell, so exec-based inject.py won't work there—use this instead.
 
-Usage:
-    python fault_injection/chaos_inject.py --fault cpu_hog   --service frontend    --duration 60
-    python fault_injection/chaos_inject.py --fault net_delay --service cartservice  --duration 120
-    python fault_injection/chaos_inject.py --fault cpu_hog   --service emailservice --concurrent currencyservice --duration 90
+Examples:
+    python fault_injection/chaos_inject.py --fault cpu_hog --service frontend --duration 60
+    python fault_injection/chaos_inject.py --fault net_delay --service cartservice --duration 120
+    python fault_injection/chaos_inject.py --fault cpu_hog --service emailservice --concurrent currencyservice --duration 90
 """
 
 import json
@@ -29,7 +27,7 @@ MANIFESTS_DIR = Path(__file__).parent / "chaos_manifests"
 EXPERIMENTS_DIR = ROOT / "experiments"
 NAMESPACE = "boutique"
 
-# Maps fault name → (template filename, Chaos Mesh kind)
+# fault name -> yaml template and Chaos Mesh kind
 FAULT_MAP: dict[str, tuple[str, str]] = {
     "cpu_hog":     ("cpu_hog.yaml",     "StressChaos"),
     "mem_leak":    ("mem_leak.yaml",    "StressChaos"),
@@ -44,10 +42,10 @@ def _kubectl(*args: str, check: bool = True) -> subprocess.CompletedProcess:
 
 
 def _render_manifest(fault: str, service: str, duration_s: int) -> dict:
-    """Load template YAML and substitute TARGET_SERVICE + DURATION_VALUE."""
+    """Fill in service name and duration placeholders in the template."""
     template_file, _ = FAULT_MAP[fault]
     raw = (MANIFESTS_DIR / template_file).read_text()
-    # Replace both the name suffix and the selector label
+    # metadata name and selector both use TARGET*
     raw = raw.replace("TARGET_SERVICE", service)
     raw = raw.replace("TARGET", service)
     raw = raw.replace("DURATION_VALUE", f"{duration_s}s")
@@ -55,9 +53,7 @@ def _render_manifest(fault: str, service: str, duration_s: int) -> dict:
 
 
 def _apply_manifest(manifest: dict) -> tuple[str, str]:
-    """kubectl apply a manifest dict. Returns (kind, name)."""
-    kind = manifest["metadata"].get("kind") or manifest.get("kind")
-    # kind is at top level in the yaml
+    """kubectl apply -f temp file; return kind and metadata.name."""
     kind = manifest["kind"]
     name = manifest["metadata"]["name"]
     with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
@@ -74,7 +70,7 @@ def _apply_manifest(manifest: dict) -> tuple[str, str]:
 
 
 def _wait_for_injection(kind: str, name: str, timeout: int = 60) -> bool:
-    """Poll until the chaos resource reports Injected=True or timeout."""
+    """Spin until status shows AllInjected or we time out."""
     deadline = time.time() + timeout
     while time.time() < deadline:
         result = _kubectl(
@@ -109,7 +105,7 @@ def _delete_resource(kind: str, name: str) -> None:
 
 
 def inject_one(fault: str, service: str, duration_s: int) -> tuple[str, str]:
-    """Render, apply, and wait for one chaos resource. Returns (kind, name)."""
+    """One service: render yaml, apply, wait for injector ack."""
     manifest = _render_manifest(fault, service, duration_s)
     kind, name = _apply_manifest(manifest)
     click.echo(f"  applied {kind}/{name}")
@@ -134,7 +130,7 @@ def run(
     namespace: str,
     concurrent: str | None,
 ) -> None:
-    """Apply Chaos Mesh fault CRs and wait for duration, then clean up."""
+    """Run the fault across one or more services, then delete the CRs."""
     if run_id is None:
         run_id = gt.make_run_id()
 
@@ -146,7 +142,6 @@ def run(
         f"Injecting '{fault}' into {services} for {duration}s  (run_id={run_id})"
     )
 
-    # Save ground truth
     run_dir = EXPERIMENTS_DIR / run_id
     gt_path = gt.write(
         run_id=run_id,
@@ -157,17 +152,14 @@ def run(
     )
     click.echo(f"Ground truth in {gt_path}")
 
-    # Apply all chaos resources
     resources: list[tuple[str, str]] = []
     for svc in services:
         kind, name = inject_one(fault, svc, duration)
         resources.append((kind, name))
 
-    # Wait for fault to run its duration
     click.echo(f"  waiting {duration}s …")
     time.sleep(duration)
 
-    # Cleanup
     click.echo("  cleaning up chaos resources …")
     for kind, name in resources:
         _delete_resource(kind, name)

@@ -1,7 +1,7 @@
 #!/bin/sh
 # Inject network degradation via tc netem (preferred) or 30% packet loss via iptables.
-# NOTE: Both require elevated capabilities (NET_ADMIN) that boutique pods don't have.
-# This fault is excluded from the experiment matrix for that reason.
+# Needs NET_ADMIN; default Boutique pods don't have it, so this path mostly fails
+# unless you patch capabilities. Batch runs usually skip it in favor of Chaos Mesh.
 DURATION="${DURATION:-60}"
 IFACE="${IFACE:-eth0}"
 

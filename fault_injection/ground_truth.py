@@ -1,13 +1,6 @@
-"""Ground-truth JSON writer and validator for fault injection experiments.
+"""Write and read experiments/<run>/ground_truth.json.
 
-Schema:
-    {
-        "run_id":            str,   # e.g. "20260326_143022"
-        "fault_type":        str,   # cpu_hog | mem_leak | net_delay | disk_hog
-        "target_services":   list[str],
-        "inject_time_utc":   str,   # ISO-8601
-        "duration_seconds":  int
-    }
+Fields: run_id, fault_type, target_services, inject_time_utc (UTC ISO), duration_seconds.
 """
 
 import json
@@ -19,7 +12,7 @@ VALID_FAULTS = {"cpu_hog", "mem_leak", "net_delay", "disk_hog", "packet_loss"}
 
 
 def make_run_id() -> str:
-    """Return a timestamp-based run ID, e.g. '20260326_143022'."""
+    """UTC timestamp string for a new run folder name."""
     return datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
 
 
@@ -30,11 +23,7 @@ def write(
     duration_seconds: int,
     output_dir: Path,
 ) -> Path:
-    """Write a ground_truth.json into *output_dir* and return its path.
-
-    Creates *output_dir* if it doesn't exist.
-    Raises ValueError if the inputs don't pass validation.
-    """
+    """mkdir -p output_dir, dump JSON, return path."""
     record = {
         "run_id": run_id,
         "fault_type": fault_type,
@@ -52,14 +41,14 @@ def write(
 
 
 def load(path: Path) -> dict:
-    """Load and validate a ground_truth.json file."""
+    """Read file, validate, return dict."""
     record = json.loads(Path(path).read_text())
     validate(record)
     return record
 
 
 def validate(record: dict) -> None:
-    """Raise ValueError if *record* is missing fields or has invalid values."""
+    """ValueError on bad shape or unknown fault_type."""
     missing = REQUIRED_FIELDS - record.keys()
     if missing:
         raise ValueError(f"ground_truth missing fields: {missing}")

@@ -1,1 +1,1 @@
-"""fault_injection — fault injection harness for microservice RCA experiments."""
+"""Chaos Mesh and kubectl-exec helpers for stressing Boutique pods."""

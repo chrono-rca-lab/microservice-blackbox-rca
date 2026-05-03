@@ -1,10 +1,6 @@
-"""Fault injection CLI.
+"""exec-based faults (needs /bin/sh in the container).
 
-Usage:
-    # Single service
     python inject.py --fault cpu_hog --service cartservice --duration 60
-
-    # Multiple services simultaneously
     python inject.py --fault mem_leak --service cartservice --concurrent checkoutservice,frontend --duration 60
 """
 
@@ -22,12 +18,8 @@ FAULTS_DIR = Path(__file__).parent / "faults"
 EXPERIMENTS_DIR = Path(__file__).parent.parent / "experiments"
 
 
-# ---------------------------------------------------------------------------
-# kubectl helpers
-# ---------------------------------------------------------------------------
-
 def find_pods(service: str, namespace: str = NAMESPACE) -> list[str]:
-    """Return names of Running pods for *service* (matched via app= label)."""
+    """Running pods where label app=<service>."""
     result = subprocess.run(
         [
             "kubectl", "get", "pods",
@@ -48,7 +40,7 @@ def find_pods(service: str, namespace: str = NAMESPACE) -> list[str]:
 
 
 def _get_container_name(pod: str, namespace: str = NAMESPACE) -> str:
-    """Return the name of the first container in *pod*."""
+    """First container spec entry (usual case: single-container pod)."""
     result = subprocess.run(
         [
             "kubectl", "get", "pod", pod,
@@ -64,7 +56,7 @@ def _get_container_name(pod: str, namespace: str = NAMESPACE) -> str:
 
 
 def probe_shell(pod: str, container: str, namespace: str = NAMESPACE) -> bool:
-    """Return True if the container has /bin/sh available via kubectl exec."""
+    """True if kubectl exec ... sh works."""
     result = subprocess.run(
         ["kubectl", "exec", "-n", namespace, pod, "-c", container,
          "--", "sh", "-c", "echo ok"],
@@ -74,11 +66,9 @@ def probe_shell(pod: str, container: str, namespace: str = NAMESPACE) -> bool:
 
 
 def exec_script(pod: str, script: str, env: dict[str, str], namespace: str = NAMESPACE) -> None:
-    """Run *script* inside *pod* via kubectl exec -- sh -c.
+    """Run a shell snippet in the workload container.
 
-    Env vars in *env* are prepended as shell assignments.
-    The script runs inside the actual service container (same cgroup that
-    cAdvisor monitors), so resource usage is visible in Prometheus metrics.
+    Prepends KEY=val lines from env; same cgroup as the app so host metrics stay honest.
     """
     container = _get_container_name(pod, namespace)
     assignments = "\n".join(f"{k}={v}" for k, v in env.items())
@@ -108,14 +98,10 @@ def exec_script(pod: str, script: str, env: dict[str, str], namespace: str = NAM
         raise RuntimeError(f"Script exited {result.returncode} in pod '{pod}': {stderr}")
 
 
-# ---------------------------------------------------------------------------
-# Injection logic
-# ---------------------------------------------------------------------------
-
 def _inject_one(fault: str, service: str, duration: int, namespace: str, dry_run: bool) -> None:
-    """Inject *fault* into one pod of *service*."""
+    """Run one fault script against one pod."""
     pods = find_pods(service, namespace)
-    pod = pods[0]   # target the first running pod
+    pod = pods[0]  # first Running replica
     container = _get_container_name(pod, namespace)
     click.echo(f"  on {service}  (pod: {pod}, container: {container})")
 
@@ -132,17 +118,13 @@ def _inject_one(fault: str, service: str, duration: int, namespace: str, dry_run
 
     if not probe_shell(pod, container, namespace):
         raise RuntimeError(
-            f"Cannot inject into '{service}': container '{container}' has no shell "
+            f"Cannot inject into '{service}': '{container}' has no shell "
             "(distroless image). Injectable services (have /bin/sh): "
             "adservice, currencyservice, emailservice, paymentservice, recommendationservice."
         )
 
     exec_script(pod, script, env, namespace)
 
-
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
 
 @click.command()
 @click.option(
@@ -160,14 +142,12 @@ def _inject_one(fault: str, service: str, duration: int, namespace: str, dry_run
 @click.option("--run-id", default=None, help="Run ID to use (generated if omitted).")
 @click.option("--dry-run", is_flag=True)
 def inject(fault: str, service: str, duration: int, concurrent: str | None, namespace: str, run_id: str | None, dry_run: bool) -> None:
-    """Inject a fault into one or more running microservice pods."""
-    # Collect all target services
+    """Fault one or more pods (same fault on each)."""
     services = [service]
     if concurrent:
         services += [s.strip() for s in concurrent.split(",") if s.strip()]
-    services = list(dict.fromkeys(services))   # deduplicate, preserve order
+    services = list(dict.fromkeys(services))  # unique, order kept
 
-    # Record ground truth before injecting
     if run_id is None:
         run_id = gt.make_run_id()
     out_dir = EXPERIMENTS_DIR / run_id
@@ -190,7 +170,6 @@ def inject(fault: str, service: str, duration: int, concurrent: str | None, name
             click.echo(f"ERROR: {exc}", err=True)
             sys.exit(1)
     else:
-        # Concurrent injection — one thread per service
         errors: list[str] = []
         lock = threading.Lock()
 
