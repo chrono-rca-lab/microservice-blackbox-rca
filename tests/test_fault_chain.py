@@ -1,4 +1,4 @@
-"""Integration tests for rca_engine.fault_chain."""
+"""Black-box RCA: pinpoint() plus the helpers it uses."""
 
 import numpy as np
 
@@ -13,9 +13,7 @@ from rca_engine.fault_chain import (
 from rca_engine.dependency import get_dependency_graph
 
 
-# -----------------------------------------------------------------------
-# Helper to build synthetic metric matrices
-# -----------------------------------------------------------------------
+# Synthetic metric fixtures (7 metrics per service).
 
 METRICS = [
     "cpu_rate", "cpu_throttle_ratio", "mem_wss",
@@ -24,7 +22,7 @@ METRICS = [
 
 
 def _flat_metrics(n_samples: int, value: float = 1.0) -> dict[str, np.ndarray]:
-    """7 flat metric arrays at realistic magnitudes."""
+    """Quiet baseline — all metrics flat."""
     return {
         "cpu_rate": np.ones(n_samples) * value,
         "cpu_throttle_ratio": np.zeros(n_samples),
@@ -41,7 +39,7 @@ def _faulty_metrics(
     n_fault: int,
     fault_start_offset: int = 2,
 ) -> dict[str, np.ndarray]:
-    """Metrics where cpu_rate has a clear step change during the fault window."""
+    """CPU steps up mid-fault window; everything else stays flat."""
     total = n_baseline + n_fault
     cpu = np.ones(total) * 0.1
     cpu[n_baseline + fault_start_offset :] = 0.9
@@ -52,8 +50,7 @@ def _faulty_metrics(
 
 
 def _make_windows(n_bl: int, n_ft: int, gap: float = 10.0):
-    """Return (bl_start, bl_end, ft_start, ft_end) consistent with
-    run_experiment.py timing."""
+    """Baseline/fault timestamps using the same step spacing as the eval runners."""
     bl_start = 1000.0
     bl_end = bl_start + n_bl * STEP_SECONDS
     ft_start = bl_end + gap
@@ -61,15 +58,10 @@ def _make_windows(n_bl: int, n_ft: int, gap: float = 10.0):
     return bl_start, bl_end, ft_start, ft_end
 
 
-# -----------------------------------------------------------------------
-# Tests for the full pinpoint() pipeline
-# -----------------------------------------------------------------------
-
 class TestPinpointPipeline:
 
     def test_single_faulty_service(self):
-        """One service with a CPU step change, others flat -> faulty service
-        should be ranked #1."""
+        """Single CPU step-up should float that service to the top."""
         n_bl, n_ft = 10, 24
         total = n_bl + n_ft
         bl_start, bl_end, ft_start, ft_end = _make_windows(n_bl, n_ft)
@@ -93,7 +85,7 @@ class TestPinpointPipeline:
         assert pinpoint({}, (0, 50), (60, 180)) == []
 
     def test_no_fault(self):
-        """All services flat -> no suspects."""
+        """Quiet data — expect an empty culprit list."""
         matrix = {
             "frontend": _flat_metrics(34),
             "adservice": _flat_metrics(34),
@@ -102,7 +94,7 @@ class TestPinpointPipeline:
         assert result == []
 
     def test_output_format_fields(self):
-        """Verify every required field is present and correctly typed."""
+        """Each ranked entry should expose the documented keys and types."""
         n_bl, n_ft = 10, 24
         total = n_bl + n_ft
         bl_start, bl_end, ft_start, ft_end = _make_windows(n_bl, n_ft)
@@ -121,7 +113,7 @@ class TestPinpointPipeline:
             assert "abnormal_metrics" in entry and isinstance(entry["abnormal_metrics"], list)
 
     def test_ranks_are_sequential(self):
-        """Ranks must be 1, 2, 3, ... with no gaps."""
+        """Ranks should be dense starting at 1."""
         n_bl, n_ft = 10, 24
         total = n_bl + n_ft
         bl_start, bl_end, ft_start, ft_end = _make_windows(n_bl, n_ft)
@@ -135,18 +127,17 @@ class TestPinpointPipeline:
         assert ranks == list(range(1, len(ranks) + 1))
 
     def test_root_causes_ranked_before_propagation(self):
-        """Root causes should appear before propagation victims."""
+        """Upstream failure should sort before knock-on effects downstream."""
         n_bl, n_ft = 10, 24
         total = n_bl + n_ft
         bl_start, bl_end, ft_start, ft_end = _make_windows(n_bl, n_ft)
 
-        # Create two faulty services — one root cause, one propagation
-        # paymentservice is a leaf; checkoutservice calls paymentservice
+        # paymentservice spikes first; checkoutservice lags (calls payment)
         matrix = {
             "paymentservice": _faulty_metrics(n_bl, n_ft, fault_start_offset=2),
             "adservice": _flat_metrics(total, value=0.1),
         }
-        # checkoutservice fault starts later (propagation from paymentservice)
+        # checkout CPU rises later than payment
         checkout_metrics = _flat_metrics(total, value=0.1)
         cpu = np.ones(total) * 0.1
         cpu[n_bl + 6:] = 0.8  # later onset
@@ -159,7 +150,7 @@ class TestPinpointPipeline:
             assert names.index("paymentservice") < names.index("checkoutservice")
 
     def test_multi_metric_fault(self):
-        """A fault that affects CPU + memory should list both in abnormal_metrics."""
+        """Joint CPU/mem shift — both signals should land in abnormal_metrics."""
         n_bl, n_ft = 10, 24
         total = n_bl + n_ft
         bl_start, bl_end, ft_start, ft_end = _make_windows(n_bl, n_ft)
@@ -185,10 +176,10 @@ class TestPinpointPipeline:
         abnormal = result[0]["abnormal_metrics"]
         assert "cpu_rate" in abnormal
         assert "mem_wss" in abnormal
-        assert result[0]["confidence"] > 1 / 7  # more than 1 metric
+        assert result[0]["confidence"] > 1 / 7  # not single-metric noise
 
     def test_realistic_magnitudes(self):
-        """CPU values ~0.1, mem values ~10^8 — both should detect changes."""
+        """Cluster-scale CPU and RSS magnitudes — both shifts should register."""
         n_bl, n_ft = 10, 24
         total = n_bl + n_ft
         bl_start, bl_end, ft_start, ft_end = _make_windows(n_bl, n_ft)
@@ -218,8 +209,7 @@ class TestPinpointPipeline:
         assert result[0]["service"] == "emailservice"
 
     def test_service_not_in_dependency_graph(self):
-        """A service that doesn't exist in the hardcoded graph should still
-        be processed and pinpointed (treated as independent)."""
+        """Unknown service name: still run through the scorer, no graph edge assumptions."""
         n_bl, n_ft = 10, 24
         total = n_bl + n_ft
         bl_start, bl_end, ft_start, ft_end = _make_windows(n_bl, n_ft)
@@ -234,18 +224,17 @@ class TestPinpointPipeline:
         assert "unknownservice" in services
 
     def test_very_short_fault_window(self):
-        """Fault window with only 3 samples should not crash."""
+        """Tiny fault slice — shouldn't throw."""
         n_bl, n_ft = 10, 3
         total = n_bl + n_ft
         bl_start, bl_end, ft_start, ft_end = _make_windows(n_bl, n_ft)
 
         matrix = {"adservice": _faulty_metrics(n_bl, n_ft)}
-        # Should not raise
         result = pinpoint(matrix, (bl_start, bl_end), (ft_start, ft_end))
         assert isinstance(result, list)
 
     def test_very_short_baseline(self):
-        """Baseline with 2 samples — minimum for the model to fit."""
+        """Minimal baseline length (2 pts) — still returns a list."""
         n_bl, n_ft = 2, 24
         total = n_bl + n_ft
         bl_start, bl_end, ft_start, ft_end = _make_windows(n_bl, n_ft)
@@ -254,10 +243,6 @@ class TestPinpointPipeline:
         result = pinpoint(matrix, (bl_start, bl_end), (ft_start, ft_end))
         assert isinstance(result, list)
 
-
-# -----------------------------------------------------------------------
-# Tests for pinpoint_faults logic
-# -----------------------------------------------------------------------
 
 class TestPinpointFaults:
 
@@ -277,20 +262,16 @@ class TestPinpointFaults:
         assert "paymentservice" in result
 
     def test_propagation_filtered(self):
-        """checkoutservice depends on paymentservice — if paymentservice is
-        root cause, checkoutservice should be filtered as propagation
-        (checkoutservice calls paymentservice, so a fault in paymentservice
-        propagates up to checkoutservice)."""
+        """Payment breaks first; checkout is a victim and should drop out."""
         graph = get_dependency_graph()
         onsets = {"paymentservice": 100.0, "checkoutservice": 105.0}
         trends = {"paymentservice": "up", "checkoutservice": "up"}
         result = pinpoint_faults(onsets, trends, graph)
         assert "paymentservice" in result
-        # checkoutservice -> paymentservice, so checkoutservice is downstream consumer
         assert "checkoutservice" not in result
 
     def test_independent_faults(self):
-        """Two leaf services with no dependency path — both should be pinpointed."""
+        """Two leaves with no path between them — keep both culprits."""
         graph = get_dependency_graph()
         onsets = {"adservice": 100.0, "paymentservice": 108.0}
         trends = {"adservice": "up", "paymentservice": "up"}
@@ -299,12 +280,12 @@ class TestPinpointFaults:
         assert "paymentservice" in result
 
     def test_external_cause(self):
-        """All services abnormal with same trend -> external cause -> empty."""
+        """Global coordinated uptrend everywhere — bail out as non-local."""
         graph = get_dependency_graph()
         all_svcs = list(graph.keys())
         onsets = {s: 100.0 + i * 0.5 for i, s in enumerate(all_svcs)}
         trends = {s: "up" for s in all_svcs}
-        # n_monitored_services must be supplied so the external cause check fires
+        # pass fleet size so coordinated fleet-wide outage logic can fire
         result = pinpoint_faults(onsets, trends, graph, n_monitored_services=len(all_svcs))
         assert result == []
 
@@ -312,26 +293,24 @@ class TestPinpointFaults:
         assert pinpoint_faults({}, {}, {}) == []
 
     def test_external_cause_not_triggered_with_mixed_trends(self):
-        """If all services are abnormal but trends differ, it's NOT external."""
+        """Mixed up/down trends — should not classify as ambient outage."""
         graph = get_dependency_graph()
         all_svcs = list(graph.keys())
         onsets = {s: 100.0 + i for i, s in enumerate(all_svcs)}
         trends = {s: ("up" if i % 2 == 0 else "down") for i, s in enumerate(all_svcs)}
         result = pinpoint_faults(onsets, trends, graph)
-        assert len(result) > 0  # not flagged as external
+        assert len(result) > 0
 
     def test_external_cause_not_triggered_with_subset(self):
-        """If only a subset of services are abnormal, it's NOT external."""
+        """Subset abnormal — still local enough to emit suspects."""
         graph = get_dependency_graph()
         onsets = {"adservice": 100.0, "paymentservice": 101.0, "emailservice": 102.0}
         trends = {"adservice": "up", "paymentservice": "up", "emailservice": "up"}
         result = pinpoint_faults(onsets, trends, graph)
         assert len(result) > 0
 
-    def test_propagation_chain_3_hop(self):
-        """frontend -> recommendationservice -> productcatalogservice.
-        If productcatalogservice is root cause, both recommendationservice
-        and frontend should be filtered."""
+    def test_propagation_three_hops(self):
+        """catalog fault ripples reco then FE — only catalog stays as culprit."""
         graph = get_dependency_graph()
         onsets = {
             "productcatalogservice": 100.0,
@@ -345,40 +324,34 @@ class TestPinpointFaults:
         assert "frontend" not in result
 
     def test_concurrent_threshold_exact_boundary(self):
-        """Services exactly at the concurrency threshold."""
+        """Onset gap exactly at concurrency window — treat as concurrent."""
         graph = get_dependency_graph()
         onsets = {"adservice": 100.0, "emailservice": 102.0}
         trends = {"adservice": "up", "emailservice": "up"}
-        # Exactly at 2.0s threshold — should be included
         result = pinpoint_faults(onsets, trends, graph, concurrency_threshold_s=2.0)
         assert "adservice" in result
         assert "emailservice" in result
 
     def test_concurrent_threshold_just_outside(self):
-        """Services just beyond the concurrency threshold — not concurrent."""
+        """Barely past concurrency window — still independent leaves, both culprits."""
         graph = get_dependency_graph()
         onsets = {"adservice": 100.0, "emailservice": 102.1}
         trends = {"adservice": "up", "emailservice": "up"}
         result = pinpoint_faults(onsets, trends, graph, concurrency_threshold_s=2.0)
         assert "adservice" in result
-        # emailservice is independent (no dep path from adservice), so still pinpointed
         assert "emailservice" in result
 
-
-# -----------------------------------------------------------------------
-# Tests for internal helpers
-# -----------------------------------------------------------------------
 
 class TestSplitSeries:
 
     def test_standard_split(self):
-        """Standard experiment with 1s step: 50 baseline + 10 gap + 120 fault = 180 samples."""
+        """1s spacing: 50 baseline + gap + 120 fault → expected slice lengths."""
         n = 180
         series = np.arange(n, dtype=float)
         bl_start = 1000.0
-        bl_end = 1050.0     # 50 samples * 1s
-        ft_start = 1060.0   # 10s gap
-        ft_end = 1180.0     # 120 samples * 1s
+        bl_end = 1050.0
+        ft_start = 1060.0
+        ft_end = 1180.0
 
         bl, ft = _split_series(series, bl_start, (bl_start, bl_end), (ft_start, ft_end))
         assert len(bl) == 50
@@ -387,18 +360,18 @@ class TestSplitSeries:
         np.testing.assert_array_equal(ft, np.arange(60, 180, dtype=float))
 
     def test_no_gap(self):
-        """Baseline and fault windows are contiguous."""
+        """Back-to-back windows."""
         series = np.arange(100, dtype=float)
         bl, ft = _split_series(series, 0.0, (0.0, 50.0), (50.0, 100.0))
         assert len(bl) == 50
         assert len(ft) == 50
 
     def test_series_shorter_than_window(self):
-        """Series is shorter than the fault window — should clamp."""
+        """Truncated series — fault tail clips to what's available."""
         series = np.arange(30, dtype=float)
         bl, ft = _split_series(series, 0.0, (0.0, 25.0), (25.0, 100.0))
         assert len(bl) == 25
-        assert len(ft) <= 5  # clamped to available data
+        assert len(ft) <= 5
 
 
 class TestDetermineTrend:
@@ -419,25 +392,25 @@ class TestDetermineTrend:
 class TestAnalyzeMetric:
 
     def test_clear_step_detects_change(self):
-        """A clear step change should produce at least one onset."""
+        """Obvious level shift → at least one onset index."""
         baseline = np.ones(10) * 5.0
         fault = np.concatenate([np.ones(5) * 5.0, np.ones(19) * 50.0])
         result = _analyze_metric(baseline, fault)
         assert result is not None
-        # _analyze_metric returns (onset_indices, directions, confidences)
+        # tuple: onsets, directions, confidences
         onsets, dirs, confs = result
         assert len(onsets) >= 1
         assert all(isinstance(o, (int, np.integer)) for o in onsets)
 
     def test_flat_no_change(self):
-        """No change -> None returned."""
+        """Flat fault segment → None."""
         baseline = np.ones(100) * 5.0
         fault = np.ones(24) * 5.0
         result = _analyze_metric(baseline, fault)
         assert result is None
 
     def test_constant_baseline_detects_any_shift(self):
-        """Perfectly constant baseline with sigma=0 should detect any shift."""
+        """Zero-variance baseline — any drift should pop."""
         baseline = np.ones(10) * 100.0
         fault = np.concatenate([np.ones(5) * 100.0, np.ones(19) * 200.0])
         result = _analyze_metric(baseline, fault)
@@ -446,11 +419,9 @@ class TestAnalyzeMetric:
         assert len(onsets) >= 1
 
     def test_noisy_baseline_small_fault(self):
-        """Noise in baseline: a small fault should NOT be detected if within
-        normal variation."""
+        """Fault buried in baseline noise — at most tiny CP list."""
         rng = np.random.default_rng(123)
         baseline = rng.normal(10.0, 2.0, 100)
-        # Fault that's within baseline noise range
         fault = rng.normal(10.5, 2.0, 24)
         result = _analyze_metric(baseline, fault)
         if result is not None:

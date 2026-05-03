@@ -1,4 +1,4 @@
-"""Tests for rca_engine.change_point."""
+"""CUSUM + block-bootstrap change detection."""
 
 import numpy as np
 
@@ -6,7 +6,7 @@ from rca_engine.change_point import run_layer1
 
 
 def test_step_up():
-    """A flat series with a step up should yield a change point near the step."""
+    """Step up lands a CP close to the break."""
     baseline = np.zeros(50)
     series = np.concatenate([np.zeros(15), np.ones(15) * 10.0])
     res = run_layer1(series, baseline, k=0.5, seed=42)
@@ -17,7 +17,7 @@ def test_step_up():
 
 
 def test_step_down():
-    """CUSUM bootstrap should detect a step down."""
+    """Step down shows up too."""
     baseline = np.ones(50) * 10.0
     series = np.concatenate([np.ones(15) * 10.0, np.zeros(15)])
     res = run_layer1(series, baseline, seed=42)
@@ -26,12 +26,11 @@ def test_step_down():
 
 
 def test_no_change():
-    """Pure noise around the mean should produce no change points with high confidence."""
+    """IID noise — crank confidence so we barely flag anything."""
     rng = np.random.default_rng(42)
     baseline = rng.normal(0, 1, 100)
     series = rng.normal(0, 1, 30)
     res = run_layer1(series, baseline, confidence_level=0.999, seed=42)
-    # With a high threshold, it should not trigger
     assert isinstance(res.change_points, list)
 
 
@@ -48,7 +47,7 @@ def test_empty():
 
 
 def test_sigma_zero():
-    """When baseline is constant, deviations should trigger."""
+    """Flat baseline — sigma effectively zero — easy trigger."""
     baseline = np.zeros(50)
     series = np.concatenate([np.zeros(5), np.ones(5) * 5.0])
     res = run_layer1(series, baseline, seed=42)
@@ -56,7 +55,7 @@ def test_sigma_zero():
 
 
 def test_bilateral_both_directions():
-    """Series with an increase followed by a decrease, with reset period."""
+    """Up leg, long flat reset, down leg — both directions logged."""
     baseline = np.zeros(50)
     series = np.concatenate([
         np.zeros(10),
@@ -70,7 +69,7 @@ def test_bilateral_both_directions():
 
 
 def test_multiple_change_points():
-    """Multiple distinct level shifts should produce multiple detections."""
+    """Back-to-back level jumps — expect ≥1 merged/split hits."""
     baseline = np.zeros(50)
     series = np.concatenate([
         np.zeros(10),
@@ -78,19 +77,18 @@ def test_multiple_change_points():
         np.ones(10) * 40.0,
     ])
     res = run_layer1(series, baseline, seed=42)
-    # Depending on merge window, might be multiple
     assert len(res.change_points) >= 1
 
 
 def test_single_sample():
-    """Single sample should not crash."""
+    """Degenerate fault window."""
     baseline = np.zeros(50)
     res = run_layer1(np.array([5.0]), baseline, seed=42)
     assert isinstance(res.change_points, list)
 
 
 def test_large_realistic_series():
-    """24-sample fault window (realistic experiment size)."""
+    """Short fault crop (~24 pts) similar to staging runs."""
     rng = np.random.default_rng(77)
     baseline_mean = 0.05
     baseline_std = 0.005

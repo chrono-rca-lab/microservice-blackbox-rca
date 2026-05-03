@@ -1,4 +1,4 @@
-"""Tests for rca_engine.predictability_filter."""
+"""FFT burst gate on CP prediction errors."""
 
 import numpy as np
 
@@ -16,8 +16,7 @@ def test_spike_survives_filtering():
 
 
 def test_normal_variation_filtered():
-    """Change points from a smooth sine wave should be filtered out
-    (prediction errors are small relative to the burst threshold)."""
+    """Sinewave — errors stay tiny next to spectral threshold."""
     t = np.linspace(0, 4 * np.pi, 40)
     series = np.sin(t) * 10 + 50
     errors_arr = np.abs(np.diff(series, prepend=series[0])) * 0.01
@@ -30,12 +29,10 @@ def test_normal_variation_filtered():
 
 
 def test_short_series_with_centered_cp():
-    """With very few samples, a change point at index 2 (centered) has
-    Q_local=2 which is enough for FFT if the error is large."""
+    """Short window — falls back paths still return a list type."""
     series = np.array([1.0, 2.0, 100.0, 3.0, 1.0])
     change_point_errors = {2: 98.0}
 
-    # cp=2 has Q_local = min(20, 2, 2) = 2 → skipped (< 3 → fallback threshold)
     result = filter_abnormal_change_points(series, change_point_errors, Q=20)
     assert isinstance(result, list)
 
@@ -55,7 +52,7 @@ def test_edge_change_point():
 
 
 def test_change_point_at_index_0_skipped():
-    """Index 0 has Q_local=0 which is < 3, so it falls back to global threshold."""
+    """Left edge CP — narrow local spectrum, uses global floor."""
     series = np.ones(10) * 5.0
     change_point_errors = {0: 10.0}
     result = filter_abnormal_change_points(series, change_point_errors, Q=5)
@@ -63,7 +60,7 @@ def test_change_point_at_index_0_skipped():
 
 
 def test_change_point_at_index_1_skipped():
-    """Index 1 has Q_local=1 which is < 3, uses global fallback."""
+    """Same idea one step in."""
     series = np.ones(10) * 5.0
     change_point_errors = {1: 10.0}
     result = filter_abnormal_change_points(series, change_point_errors, Q=5)
@@ -71,7 +68,7 @@ def test_change_point_at_index_1_skipped():
 
 
 def test_out_of_range_change_point_ignored():
-    """Change point index >= len(series) should be silently ignored."""
+    """OOB index skipped — empty result."""
     series = np.ones(10) * 5.0
     change_point_errors = {15: 10.0}
     result = filter_abnormal_change_points(series, change_point_errors, Q=5)
@@ -79,11 +76,9 @@ def test_out_of_range_change_point_ignored():
 
 
 def test_multiple_change_points_mixed():
-    """Some change points abnormal, others filtered."""
+    """Mix of tame vs huge errors — keep the spike."""
     series = np.ones(40) * 5.0
     series[20] = 200.0  # spike at 20
-    # Index 10 has zero error — strict > means it can never pass the threshold.
-    # Index 20 has a huge error — should always survive.
     change_point_errors = {10: 0.0, 20: 195.0}
 
     result = filter_abnormal_change_points(series, change_point_errors, Q=8)
@@ -92,7 +87,7 @@ def test_multiple_change_points_mixed():
 
 
 def test_q_larger_than_series():
-    """Q much larger than series — should adapt gracefully."""
+    """FFT window clamps — still spikes through."""
     series = np.array([1, 2, 3, 50, 3, 2, 1], dtype=float)
     change_point_errors = {3: 47.0}
     result = filter_abnormal_change_points(series, change_point_errors, Q=100)
@@ -126,7 +121,7 @@ def test_flat_window_threshold():
 
 
 def test_zero_prediction_error_not_abnormal():
-    """If prediction error is 0 at a change point, it should be filtered."""
+    """Zero error ⇒ drop."""
     series = np.ones(30) * 5.0
     change_point_errors = {15: 0.0}
     result = filter_abnormal_change_points(series, change_point_errors, Q=10)

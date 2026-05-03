@@ -1,3 +1,5 @@
+"""Discretized Markov surrogate on baselines."""
+
 import numpy as np
 from rca_engine.normal_model import NormalModel
 

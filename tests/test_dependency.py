@@ -1,4 +1,4 @@
-"""Tests for rca_engine.dependency."""
+"""Online Boutique adjacency helpers."""
 
 from rca_engine.dependency import get_dependency_graph, has_path, find_path, ONLINE_BOUTIQUE_DEPENDENCIES
 
@@ -51,7 +51,7 @@ def test_no_path_between_leaf_services():
 
 
 def test_all_11_services_present():
-    """Dependency graph should include all 11 Online Boutique services."""
+    """Exactly the 11 Boutique microservices as keys."""
     expected = {
         "frontend", "cartservice", "productcatalogservice", "currencyservice",
         "paymentservice", "shippingservice", "emailservice", "checkoutservice",
@@ -61,7 +61,7 @@ def test_all_11_services_present():
 
 
 def test_leaf_services_have_no_dependencies():
-    """Leaf services should have empty dependency lists."""
+    """Known leaves point at nothing downstream."""
     leaves = [
         "productcatalogservice", "currencyservice", "paymentservice",
         "shippingservice", "emailservice", "adservice", "redis-cart",
@@ -72,33 +72,29 @@ def test_leaf_services_have_no_dependencies():
 
 
 def test_frontend_is_root():
-    """Frontend should have the most dependencies (it's the entry point)."""
+    """FE fans out widest — ingress surface."""
     g = get_dependency_graph()
     assert len(g["frontend"]) >= 7
 
 
 def test_checkoutservice_calls_payment():
-    """Checkout calls payment -- critical for propagation tests."""
+    """Smoke the checkout→payment edge (used elsewhere for victim logic)."""
     g = get_dependency_graph()
     assert "paymentservice" in g["checkoutservice"]
 
 
 def test_has_path_empty_graph():
-    """Empty graph should always return False (except self)."""
+    """Bare dict — only src==dst is true."""
     assert has_path({}, "a", "b") is False
     assert has_path({}, "a", "a") is True
 
 
 def test_has_path_with_custom_cyclic_graph():
-    """Test BFS with a custom cyclic graph."""
-    g = {"a": ["b"], "b": ["c"], "c": ["a"]}  # cycle
+    """Tiny cyclic toy graph — sanity BFS."""
+    g = {"a": ["b"], "b": ["c"], "c": ["a"]}
     assert has_path(g, "a", "c") is True
     assert has_path(g, "c", "b") is True  # c -> a -> b
 
-
-# ---------------------------------------------------------------------------
-# find_path tests
-# ---------------------------------------------------------------------------
 
 def test_find_path_self():
     g = get_dependency_graph()
