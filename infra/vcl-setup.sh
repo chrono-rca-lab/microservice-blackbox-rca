@@ -8,9 +8,10 @@
 #   STEP 4 (laptop):     bash infra/vcl-setup.sh deploy
 #
 # 4-node setup (recommended — isolated monitoring + isolated experiment target):
-#   Machine 1 (infra-and-upstream):  frontend, checkoutservice, productcatalog, shipping, redis-cart
-#   Machine 2 (fault-targets):       cartservice, currencyservice, emailservice, paymentservice,
-#                                    recommendationservice, adservice
+#   Machine 1 (infra-and-upstream):  frontend, productcatalog, adservice, paymentservice,
+#                                    shippingservice, redis-cart
+#   Machine 2 (fault-targets):       recommendationservice, checkoutservice, currencyservice,
+#                                    cartservice, emailservice
 #   Machine 3 (monitoring):          Prometheus, Grafana — no resource contention with services
 #   Machine 4 (experiment-target):   single service under test, moved here per experiment
 #

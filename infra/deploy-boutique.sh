@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Deploy Google Online Boutique (patched for fault injection) to the fchain-rca kind cluster.
+# Deploy patched Online Boutique to the kind cluster (creates cluster if needed).
 #
 # Usage:
 #   bash infra/deploy-boutique.sh

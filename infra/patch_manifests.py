@@ -37,8 +37,8 @@ SCRIPT_DIR = Path(__file__).parent
 # paymentservice, currencyservice): upstream CPU limits (200-300m) are too
 # tight for cpu_hog. With even 1 busy-loop the container hits its CPU ceiling
 # and the gRPC liveness probe (1s timeout) starves → pod restart before the
-# fault can propagate. 500m gives the service ~250ms/s of CPU headroom while
-# still driving cpu_throttle_ratio to ~50% — a strong, clean RCA signal.
+# fault can propagate. 500m keeps some headroom so probes stay green while
+# throttle ratio still climbs enough to show up clearly in metrics.
 RESOURCE_OVERRIDES: dict[str, dict] = {
     # CPU: kind nodes + .NET GC can starve the default 200–300m budget; gRPC probes
     # use timeout=1s and fail → liveness SIGKILL (exit 137) before OOM shows up.

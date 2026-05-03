@@ -1,8 +1,5 @@
-"""Workload generator for the Online Boutique frontend.
+"""HTTP journeys against the storefront: browse → product → cart → checkout."""
 
-Simulates realistic user journeys (browse -> view product -> add to cart -> checkout)
-at a configurable base RPS with a sine-wave traffic pattern.
-"""
 
 import math
 import queue
@@ -40,13 +37,13 @@ _CHECKOUT_FORM = {
 }
 
 class WorkloadGenerator:
-    """Generates HTTP traffic against the Online Boutique frontend."""
+    """Background thread pacing requests to mimic users hitting the frontend."""
 
     def __init__(self, frontend_url: str = "http://localhost:8080", quiet: bool = False) -> None:
         self.frontend_url = frontend_url.rstrip("/")
         self._session = requests.Session()
-        self._quiet = quiet  # suppresses SLO violation prints (use when run from orchestrator)
-        # Rolling window of (completed_at, latency_s) tuples for SLO tracking
+        self._quiet = quiet  # orchestrators set this so stderr stays clean
+        # (completed_at, latency_s) pairs for sliding p95
         self._latency_window: deque[tuple[float, float]] = deque()
         self._window_lock = threading.Lock()
         self._stop_event = threading.Event()
@@ -113,7 +110,8 @@ class WorkloadGenerator:
 
     @staticmethod
     def _rps_at(t: float, base_rps: float) -> float:
-        """Return the target RPS at elapsed time *t* (seconds)."""
+        """Sinusoidal modulation on top of baseline RPS."""
+
         return base_rps + base_rps * 0.5 * math.sin(2 * math.pi * t / 60)
 
     # ------------------------------------------------------------------
@@ -190,17 +188,8 @@ class WorkloadGenerator:
         base_rps: float = 5,
         block: bool = False,
     ) -> threading.Thread:
-        """Start the workload generator.
+        """Spin up traffic; optionally block until *duration_seconds* elapses."""
 
-        Args:
-            duration_seconds: How long to run before stopping automatically.
-            base_rps:         Baseline requests per second.
-                           Effective RPS follows a sine wave around this baseline.
-            block:            If True, block the caller until the run completes.
-
-        Returns:
-            The background ``threading.Thread`` (already started).
-        """
         self._stop_event.clear()
         self._thread = threading.Thread(
             target=self._run_loop,

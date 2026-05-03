@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Fresh stack: monitoring → chaos-mesh → boutique (with optional stuck-namespace fix).
 #
-# Prerequisites: Docker, kind cluster name fchain-rca (created by deploy-boutique if missing),
-#                kubectl, helm, jq (recommended if boutique namespace is stuck Terminating).
+# Needs: Docker, kubectl, helm, and a kind cluster created by deploy-boutique.sh if absent.
+# jq helps if boutique is stuck Terminating while finalizers clear.
 #
 # Usage:
 #   bash infra/deploy-all.sh

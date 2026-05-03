@@ -1,7 +1,8 @@
-"""Per-edge propagation delay map for the FChain RCA algorithm.
+"""Measured fault propagation delays per dependency edge.
 
-Stores empirically calibrated propagation delays between connected services and
-exposes them for use in the edge-aware Layer 7 concurrency check in fault_chain.py.
+Used when deciding whether two services flipped abnormal around the same time
+because one fault spread to the other, or they're independent (`fault_chain.pinpoint()`
+and `--propagation-map` on the eval scripts).
 
 JSON schema (calibration/propagation_delays.json):
 {
@@ -21,9 +22,8 @@ JSON schema (calibration/propagation_delays.json):
   }
 }
 
-Threshold formula:  threshold = median_delay + max(1.0, median_delay * 0.5)
-The +1.0 floor compensates for 1-second metric resolution quantization — a
-sub-second propagation can appear as a 0-1s gap depending on scrape alignment.
+Threshold = median_delay + max(1.0, median_delay * 0.5). The +1 bucket is there
+because scrapes are 1s apart, so fast propagation sometimes shows up as 0–1s.
 
 Usage:
     from calibration.propagation_map import PropagationMap
@@ -46,15 +46,11 @@ from typing import Any
 # ---------------------------------------------------------------------------
 
 def _compute_threshold(median_delay_s: float) -> float:
-    """Return the per-edge concurrency threshold from a measured median delay.
+    """Bump the median delay into a usable per-edge concurrency threshold.
 
-    threshold = median + max(1.0, median * 0.5)
-
-    The +1.0 floor accounts for 1-second Prometheus scrape resolution: a fault
-    that propagates in 200 ms can show up as a 0-1 s detected onset gap
-    depending on when the scrape fires.  Using max(1.0, ...) ensures the
-    threshold is always at least 1 s above the median, which avoids classifying
-    genuine propagation (onset_diff >= threshold) as concurrent.
+    Same formula as saved in JSON: median + max(1.0, 0.5 * median).
+    Prometheus only gives second-granularity timings, so we never add less than 1s
+    on top of the median—that way real propagation isn't misread as coincidence.
     """
     return median_delay_s + max(1.0, median_delay_s * 0.5)
 
@@ -64,11 +60,8 @@ def _compute_threshold(median_delay_s: float) -> float:
 # ---------------------------------------------------------------------------
 
 class PropagationMap:
-    """Holds per-edge propagation delays and answers threshold queries.
+    """Loaded JSON map; returns thresholds per edge or along a dependency path."""
 
-    All public query methods fall back to *default_threshold_s* when an edge
-    has no calibration data (no propagation observed or edge not calibrated).
-    """
 
     def __init__(
         self,
@@ -142,16 +135,12 @@ class PropagationMap:
         dst: str,
         graph: dict[str, list[str]],
     ) -> float:
-        """Return the summed threshold along the shortest dependency path src→dst.
+        """Sum thresholds along the short path between two services.
 
-        Imports ``find_path`` from ``rca_engine.dependency`` lazily to avoid
-        circular imports.  If no path exists, or any edge on the path has no
-        calibration data, the method returns *default_threshold_s* for that
-        missing edge and sums normally.
-
-        For back-pressure paths (dst→src in the dependency graph), the method
-        tries both directions and returns the smaller threshold — the more
-        conservative choice.
+        Lazy-imports ``find_path`` to avoid circular imports. Any edge without data
+        uses ``default_threshold_s``. Tries upstream and downstream directions
+        (handy when effects bounce back up the stack) and keeps the smaller total
+        so we don't over-credit coincidence as propagation.
         """
         from rca_engine.dependency import find_path
 

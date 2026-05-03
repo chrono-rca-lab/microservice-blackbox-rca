@@ -22,8 +22,9 @@ if [[ "${K3S}" == true ]]; then
   echo "[chaos-mesh] k3s mode — using socket ${SOCKET_PATH}"
 else
   echo "[chaos-mesh] Verifying containerd socket path on kind nodes …"
-  # kind nodes use containerd; the socket is mounted from the host
+  # Socket path passes through from the Docker host control-plane container
   SOCKET_PATH="/run/containerd/containerd.sock"
+  # Control-plane container name is always "<kind-cluster>-control-plane"
   if docker exec fchain-rca-control-plane ls -la "${SOCKET_PATH}" >/dev/null 2>&1; then
     echo "[chaos-mesh]   socket found at ${SOCKET_PATH}"
   else

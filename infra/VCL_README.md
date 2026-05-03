@@ -159,7 +159,7 @@ bash infra/vcl-setup.sh deploy
 
 This runs in ~10 minutes on first boot (image pulls). It:
 1. Patches boutique manifests for fault injection
-2. Adds node selectors (Machine 1: frontend/checkout/catalog/shipping/redis, Machine 2: cart/currency/email/payment/recommendation/ad)
+2. Adds node selectors (Machine 1: frontend/productcatalog/ad/payment/shipping/redis, Machine 2: recommendation/checkout/currency/cart/email)
 3. Deploys Online Boutique and waits for all pods Ready
 4. Deploys Prometheus + Grafana
 5. Deploys Chaos Mesh

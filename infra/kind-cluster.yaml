@@ -3,8 +3,8 @@ apiVersion: kind.x-k8s.io/v1alpha4
 name: fchain-rca
 nodes:
   - role: control-plane
-    # cAdvisor housekeeping: 10s gives ~12 real data points per 120s fault window.
-    # Rate/deriv windows in metrics_client.py use [30s]/[45s] to span 2-3 updates.
+    # 10s cadvisor housekeeping: ~12 samples inside a typical 120s fault run.
+    # metrics_client wider rate/deriv windows expect a couple housekeeping ticks each.
     kubeadmConfigPatches:
       - |
         kind: InitConfiguration

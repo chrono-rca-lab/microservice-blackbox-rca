@@ -1,24 +1,16 @@
-"""Propagation delay calibration script.
+"""Fill calibration/propagation_delays.json from live cluster runs.
 
-Measures per-edge fault propagation delays between connected services in the
-Online Boutique by injecting a fault into each downstream service and observing
-how long it takes for the anomaly to appear in each upstream caller.
+Inject into each callee, watch callers light up afterward, subtract onset times—that's
+your delay per caller→callee pair. One experiment touches every edge into X at once.
 
-Strategy
---------
-One experiment per callee service.  When a fault is injected into service X,
-every service that calls X should exhibit a propagated anomaly.  The onset-time
-gap between X and each of its callers gives the propagation delay for that edge.
-This lets us calibrate all ``caller→X`` edges in a single experiment.
-
-The calibration reuses:
+Depends on:
   - WorkloadGenerator           (infra/loadgen.py)
   - PrometheusMetricsClient     (rca_engine/metrics_client.py)
   - inject_one / _delete_resource  (fault_injection/chaos_inject.py)
   - fault_chain.pinpoint()      (rca_engine/fault_chain.py)
 
-Usage
------
+Examples:
+
     # Full calibration — 10 targets × 3 trials ≈ 2 hours
     python calibration/calibrate.py --trials 3
 
@@ -134,7 +126,7 @@ def _run_single_calibration(
         return {caller: None for caller in callers}
 
     # ------------------------------------------------------------------
-    # Run onset detection (Layers 1-5) via fault_chain.pinpoint()
+    # Onset times from the full pinpoint() stack
     # ------------------------------------------------------------------
     onset_times: dict[str, float] = {}
     if matrix:
@@ -186,7 +178,7 @@ def calibrate(
     output: str,
     dry_run: bool,
 ) -> None:
-    """Calibrate per-edge propagation delays for the FChain RCA algorithm."""
+    """Stress each callee once per trial and record caller–callee onset gaps."""
     graph   = get_dependency_graph()
     targets = _callee_services(graph)
 

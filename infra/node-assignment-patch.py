@@ -6,12 +6,12 @@ When you cpu_hog cartservice (Machine 2), any anomaly on frontend (Machine 1)
 is true fault propagation through the application — not hardware contention.
 
 Machine 1 (role=infra-and-upstream):
-    frontend, checkoutservice, productcatalogservice, shippingservice,
-    redis-cart, loadgenerator
+    frontend, productcatalogservice, adservice, paymentservice,
+    shippingservice, redis-cart, loadgenerator
 
 Machine 2 (role=fault-targets):
-    cartservice, currencyservice, emailservice, paymentservice,
-    recommendationservice, adservice
+    recommendationservice, checkoutservice, currencyservice,
+    cartservice, emailservice
 
 Usage:
     python infra/node-assignment-patch.py                          # in-place
@@ -27,20 +27,20 @@ SCRIPT_DIR = Path(__file__).parent
 
 # Maps deployment name → node role label value
 NODE_ASSIGNMENTS: dict[str, str] = {
-    # Machine 1 — upstream callers and shared infrastructure
+    # Machine 1 — frontend and selected upstream/backing services
     "frontend":               "infra-and-upstream",
-    "checkoutservice":        "infra-and-upstream",
     "productcatalogservice":  "infra-and-upstream",
+    "adservice":              "infra-and-upstream",
+    "paymentservice":         "infra-and-upstream",
     "shippingservice":        "infra-and-upstream",
     "redis-cart":             "infra-and-upstream",
     "loadgenerator":          "infra-and-upstream",
-    # Machine 2 — common fault injection targets
-    "cartservice":            "fault-targets",
-    "currencyservice":        "fault-targets",
-    "emailservice":           "fault-targets",
-    "paymentservice":         "fault-targets",
+    # Machine 2 — checkout path and common fault targets
     "recommendationservice":  "fault-targets",
-    "adservice":              "fault-targets",
+    "checkoutservice":        "fault-targets",
+    "currencyservice":        "fault-targets",
+    "cartservice":            "fault-targets",
+    "emailservice":           "fault-targets",
 }
 
 
